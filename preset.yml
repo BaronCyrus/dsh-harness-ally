@@ -1,0 +1,3 @@
+name: Harness联盟模式
+
+description: 自由组合运行 Harness 与模型：保留 DSH 原生模型选择器，自动读取当前已配置、可用的全部模型；每个回合可选择由 DSH、Claude Code 或 Codex 执行。会话上下文、权限、停止操作和结果记录始终由 DeepSeek Harness 统一管理，并提供 subagent_claude_code / subagent_codex 进行并行委派。

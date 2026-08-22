@@ -1,0 +1,37 @@
+{
+  "name": "dsh-ally",
+  "version": "0.7.1",
+  "description": "Harness Alliance Mode for DeepSeek Harness with DSH-routed Claude Code and Codex execution.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.cjs test/*.test.mjs"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/cli-manager.js",
+    "lib/state.js",
+    "lib/bridge.js",
+    "lib/async-queue.js",
+    "lib/codex-app-server.js",
+    "lib/harness.js",
+    "lib/runtime.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

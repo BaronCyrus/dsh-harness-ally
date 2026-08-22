@@ -1,0 +1,5 @@
+# Harness 联盟的 HOST 平面：provider registry、受管子进程、协议 adapter、
+# 主会话投影和浏览器 transport 都跨会话共享，因此由一个持久插件承载。
+- insert:
+    - id: ally
+      name: dsh-ally
