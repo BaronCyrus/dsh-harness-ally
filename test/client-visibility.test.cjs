@@ -15,6 +15,7 @@ function loadClient(agentPreset, { selectorOpen = false } = {}) {
   const React = {
     createElement(type, props, ...children) { return { type, props: { ...props, children } } },
     useEffect() {},
+    useRef(value) { return { current: value } },
     useState(value) { return [selectorOpen && value === false ? true : value, () => {}] },
   }
   let plugin
