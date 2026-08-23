@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 
 import { createHarnessGateway } from '../lib/harness.js'
+import { createNativeSessionRegistry } from '../lib/native-session.js'
+import { createAllianceState } from '../lib/state.js'
 
 function fixture(events = {}) {
   const spawns = []
@@ -16,6 +21,7 @@ function fixture(events = {}) {
       return `/bin/${command}`
     },
     spawn(spec) {
+      const spawnEvents = events.spawnEvents?.[spawns.length] ?? events
       const stdin = new PassThrough()
       const stdout = new PassThrough()
       const stderr = new PassThrough()
@@ -25,10 +31,10 @@ function fixture(events = {}) {
       stdin.on('data', (chunk) => { stdinText += chunk.toString('utf8') })
       let resolveDone
       const done = new Promise((resolve) => { resolveDone = resolve })
-      const settle = (outcome = events.outcome ?? { exitCode: 0, signal: null }) => {
-        if (events.stdoutChunks) for (const chunk of events.stdoutChunks) stdout.write(chunk)
-        else for (const line of events.stdout ?? []) stdout.write(`${line}\n`)
-        for (const line of events.stderr ?? []) stderr.write(line)
+      const settle = (outcome = spawnEvents.outcome ?? { exitCode: 0, signal: null }) => {
+        if (spawnEvents.stdoutChunks) for (const chunk of spawnEvents.stdoutChunks) stdout.write(chunk)
+        else for (const line of spawnEvents.stdout ?? []) stdout.write(`${line}\n`)
+        for (const line of spawnEvents.stderr ?? []) stderr.write(line)
         stdout.end()
         stderr.end()
         resolveDone(outcome)
@@ -42,7 +48,7 @@ function fixture(events = {}) {
         get waits() { return waits },
         settle,
       }
-      if (events.defer) spec.signal?.addEventListener('abort', () => {
+      if (spawnEvents.defer) spec.signal?.addEventListener('abort', () => {
         handle.terminate()
         settle({ exitCode: null, signal: 'SIGTERM' })
       }, { once: true })
@@ -70,6 +76,8 @@ function fixture(events = {}) {
     },
     bridge: events.bridge ? { async open(...args) { bridgeOpens.push(args); return events.bridge } } : undefined,
     cliManager: events.cliManager,
+    nativeSessions: events.nativeSessions,
+    stateDir: events.stateDir,
   })
   return { gateway, spawns, resolves, confined, bridgeOpens }
 }
@@ -110,6 +118,141 @@ test('Claude adapter is stateless and receives the selected model', async () => 
   assert.equal(argv.includes('--no-session-persistence'), true)
   assert.deepEqual(argv.slice(-2), ['--model', 'claude-opus-4-6'])
   assert.equal(result.output[0].text, 'CLAUDE_OK')
+})
+
+test('Claude persists a fresh native session and adopts its init id', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'fresh',
+    prompt: 'FULL CANONICAL HISTORY',
+    adopt(id) { adopted.push(id) },
+    async fallback() { throw new Error('unexpected fallback') },
+  }
+  const f = fixture({ stdout: [
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session-1' }),
+    JSON.stringify({ type: 'result', subtype: 'success', result: 'OK' }),
+  ] })
+
+  const run = await f.gateway.start('claude-code', { ...request('task'), model: 'model-a', nativeSession })
+  const result = await run.result
+
+  const argv = f.spawns[0].spec.argv
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(argv.includes('--no-session-persistence'), false)
+  assert.equal(argv.includes('--session-id'), true)
+  assert.equal(f.spawns[0].handle.stdinText, 'FULL CANONICAL HISTORY')
+  assert.deepEqual(adopted, ['claude-session-1'])
+})
+
+test('Claude resumes a native session with only the incremental prompt', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'claude-session-old',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() { throw new Error('unexpected fallback') },
+  }
+  const f = fixture({ stdout: [
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session-old' }),
+    JSON.stringify({ type: 'result', subtype: 'success', result: 'OK' }),
+  ] })
+
+  const run = await f.gateway.start('claude-code', { ...request('task'), model: 'model-a', nativeSession })
+  const result = await run.result
+
+  const argv = f.spawns[0].spec.argv
+  assert.equal(result.stopReason, 'completed')
+  assert.deepEqual(argv.slice(argv.indexOf('--resume'), argv.indexOf('--resume') + 2), ['--resume', 'claude-session-old'])
+  assert.equal(f.spawns[0].handle.stdinText, 'USER\ncontinue')
+  assert.deepEqual(adopted, ['claude-session-old'])
+})
+
+test('Claude retries one invalid resume as a fresh full-history session', async () => {
+  const adopted = []
+  let fallbacks = 0
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'claude-session-missing',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() {
+      fallbacks += 1
+      this.mode = 'fresh'
+      this.vendorId = undefined
+      this.prompt = 'FULL CANONICAL HISTORY'
+    },
+  }
+  const f = fixture({ spawnEvents: [
+    {
+      stderr: ['No conversation found with session ID: claude-session-missing'],
+      outcome: { exitCode: 1, signal: null },
+    },
+    { stdout: [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session-new' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'RECOVERED' }),
+    ] },
+  ] })
+
+  const run = await f.gateway.start('claude-code', { ...request('task'), model: 'model-a', nativeSession })
+  const result = await run.result
+
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(f.spawns.length, 2)
+  assert.equal(f.spawns[0].spec.argv.includes('--resume'), true)
+  assert.equal(f.spawns[1].spec.argv.includes('--resume'), false)
+  assert.equal(f.spawns[1].spec.argv.includes('--session-id'), true)
+  assert.equal(f.spawns[1].handle.stdinText, 'FULL CANONICAL HISTORY')
+  assert.equal(fallbacks, 1)
+  assert.deepEqual(adopted, ['claude-session-new'])
+})
+
+test('gateway resumes only a consecutive matching DSH session lane', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-gateway-resume-'))
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const nativeSessions = createNativeSessionRegistry({ state, version: 'test-version' })
+    const f = fixture({
+      nativeSessions,
+      stateDir: directory,
+      stdout: [
+        JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session-1' }),
+        JSON.stringify({ type: 'result', subtype: 'success', result: 'OK' }),
+      ],
+    })
+    const first = await f.gateway.start('claude-code', {
+      ...request('FULL FIRST'),
+      incrementalPrompt: [{ type: 'text', text: 'USER\nfirst' }],
+      promptSignature: 'system-a',
+      turn: 1,
+      provider: 'provider-a',
+      model: 'model-a',
+    })
+    await first.result
+    await first.dispose()
+
+    const second = await f.gateway.start('claude-code', {
+      ...request('FULL FIRST\n\nASSISTANT\nOK\n\nUSER\nsecond'),
+      incrementalPrompt: [{ type: 'text', text: 'USER\nsecond' }],
+      promptSignature: 'system-a',
+      turn: 2,
+      provider: 'provider-a',
+      model: 'model-a',
+    })
+    await second.result
+    await second.dispose()
+    await state.close()
+
+    assert.equal(f.spawns[0].spec.argv.includes('--session-id'), true)
+    assert.deepEqual(f.spawns[1].spec.argv.slice(f.spawns[1].spec.argv.indexOf('--resume'), f.spawns[1].spec.argv.indexOf('--resume') + 2), [
+      '--resume', 'claude-session-1',
+    ])
+    assert.equal(f.spawns[0].handle.stdinText, 'FULL FIRST')
+    assert.equal(f.spawns[1].handle.stdinText, 'USER\nsecond')
+    assert.equal(f.spawns[1].spec.env.CLAUDE_CONFIG_DIR, join(directory, 'native', 'claude'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('Claude adapter exposes partial text before its final result', async () => {

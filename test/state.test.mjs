@@ -18,8 +18,9 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
     await first.close()
 
     const raw = JSON.parse(await readFile(file, 'utf8'))
-    assert.equal(raw.version, 1)
+    assert.equal(raw.version, 2)
     assert.equal(raw.sessions['session-1'].harness, 'kimi-code')
+    assert.deepEqual(raw.resumes, {})
 
     const restored = await createAllianceState({ file })
     assert.equal(restored.harness('session-1'), 'kimi-code')
@@ -27,6 +28,37 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
       turn: 2, step: 1, runId: 'run-1', harness: 'kimi-code', provider: 'configured', model: 'model-a',
     }])
     await restored.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('native session records use CAS and retain only the newest 200 lanes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-state-resume-'))
+  const file = join(directory, 'state.json')
+  try {
+    const state = await createAllianceState({ file })
+    for (let index = 0; index < 205; index += 1) {
+      const record = await state.compareAndSetResume(`lane-${index}`, 0, {
+        vendorId: `vendor-${index}`,
+        fingerprint: 'fingerprint',
+        throughTurn: 1,
+        turns: 1,
+        updatedAt: index,
+      })
+      assert.equal(record.revision, 1)
+    }
+    assert.equal(state.resume('lane-0'), undefined)
+    assert.equal(state.resume('lane-4'), undefined)
+    assert.equal(state.resume('lane-5').vendorId, 'vendor-5')
+    assert.equal(await state.compareAndSetResume('lane-5', 0, {
+      vendorId: 'stale', fingerprint: 'fingerprint', throughTurn: 2, turns: 2, updatedAt: 300,
+    }), undefined)
+    await state.close()
+
+    const raw = JSON.parse(await readFile(file, 'utf8'))
+    assert.equal(Object.keys(raw.resumes).length, 200)
+    assert.equal(raw.resumes['lane-204'].vendorId, 'vendor-204')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

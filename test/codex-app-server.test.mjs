@@ -10,7 +10,7 @@ async function collect(iterable) {
   return values
 }
 
-function fixture() {
+function fixture({ nativeSession, resumeFails = false } = {}) {
   const requests = []
   const spawns = []
   let terminal
@@ -18,6 +18,8 @@ function fixture() {
   const controller = new AbortController()
   let bridgeCloses = 0
   const bridgeOpens = []
+  let activeThreadId = 'thread-1'
+  const createdDirectories = []
   const subprocess = {
     async resolveExecutable(command) { return `/bin/${command}` },
     spawn(spec) {
@@ -40,22 +42,29 @@ function fixture() {
           requests.push(request)
           if (request.method === 'initialize') {
             send({ id: request.id, result: { userAgent: 'codex-test', codexHome: '/tmp/codex' } })
+          } else if (request.method === 'thread/resume') {
+            if (resumeFails) send({ id: request.id, error: { code: -32602, message: 'thread not found' } })
+            else {
+              activeThreadId = request.params.threadId
+              send({ id: request.id, result: { thread: { id: activeThreadId }, model: 'm', modelProvider: 'dsh-ally', cwd: '/workspace' } })
+            }
           } else if (request.method === 'thread/start') {
-            send({ id: request.id, result: { thread: { id: 'thread-1' }, model: 'm', modelProvider: 'dsh-ally', cwd: '/workspace' } })
+            activeThreadId = resumeFails ? 'thread-2' : 'thread-1'
+            send({ id: request.id, result: { thread: { id: activeThreadId }, model: 'm', modelProvider: 'dsh-ally', cwd: '/workspace' } })
           } else if (request.method === 'turn/start') {
             send({ id: request.id, result: { turn: { id: 'turn-1' } } })
             queueMicrotask(() => {
-              send({ method: 'item/reasoning/summaryTextDelta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'reasoning-1', delta: 'Inspect files.', summaryIndex: 0 } })
-              send({ method: 'item/started', params: { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'command-1', type: 'commandExecution', command: 'find . -type d', cwd: '/workspace', status: 'inProgress' } } })
-              send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'message-1', delta: 'Hel' } })
-              send({ method: 'item/updated', params: { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'message-1', type: 'agentMessage', text: 'Hello' } } })
-              send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'message-1', delta: 'lo' } })
-              send({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'message-1', type: 'agentMessage', text: 'Hello' } } })
+              send({ method: 'item/reasoning/summaryTextDelta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'reasoning-1', delta: 'Inspect files.', summaryIndex: 0 } })
+              send({ method: 'item/started', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'command-1', type: 'commandExecution', command: 'find . -type d', cwd: '/workspace', status: 'inProgress' } } })
+              send({ method: 'item/agentMessage/delta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'message-1', delta: 'Hel' } })
+              send({ method: 'item/updated', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'message-1', type: 'agentMessage', text: 'Hello' } } })
+              send({ method: 'item/agentMessage/delta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'message-1', delta: 'lo' } })
+              send({ method: 'item/completed', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'message-1', type: 'agentMessage', text: 'Hello' } } })
               terminal()
             })
           } else if (request.method === 'turn/interrupt') {
             send({ id: request.id, result: {} })
-            send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'interrupted' } } })
+            send({ method: 'turn/completed', params: { threadId: activeThreadId, turn: { id: 'turn-1', status: 'interrupted' } } })
           }
         }
       })
@@ -88,6 +97,8 @@ function fixture() {
     authorize() {},
     cliManager: { async resolve() { return '/bin/codex' } },
     bridge: { async open(...args) { bridgeOpens.push(args); return bridgeRoute } },
+    stateDir: '/managed-state',
+    async makeDirectory(path, options) { createdDirectories.push({ path, options }) },
   }
   const request = {
     parent: { session: { id: 'session-1', header: { cwd: '/workspace', agentPreset: 'harness-ally' } } },
@@ -96,8 +107,9 @@ function fixture() {
     model: 'model',
     reasoningEffort: 'high',
     signal: controller.signal,
+    ...(nativeSession ? { nativeSession } : {}),
   }
-  return { deps, request, requests, spawns, terminalGate, controller, bridgeOpens, get bridgeCloses() { return bridgeCloses } }
+  return { deps, request, requests, spawns, terminalGate, controller, bridgeOpens, createdDirectories, get bridgeCloses() { return bridgeCloses } }
 }
 
 test('Codex app-server streams dedicated agent message deltas without snapshot duplication', async () => {
@@ -123,7 +135,7 @@ test('Codex app-server streams dedicated agent message deltas without snapshot d
   assert.equal(f.spawns[0].spec.argv[1], 'app-server')
   assert.equal(f.spawns[0].spec.argv.includes('exec'), false)
   assert.deepEqual(f.requests.map((request) => request.method), ['initialize', 'thread/start', 'turn/start'])
-  assert.equal(f.requests[0].params.clientInfo.version, '0.9.3')
+  assert.equal(f.requests[0].params.clientInfo.version, '0.10.0')
   assert.equal(f.requests[0].params.capabilities.experimentalApi, true)
   assert.deepEqual(f.bridgeOpens[0].slice(0, 2), ['provider', 'model'])
   assert.equal(f.requests[1].params.modelProvider, 'dsh-ally')
@@ -136,6 +148,62 @@ test('Codex app-server streams dedicated agent message deltas without snapshot d
   assert.equal(f.requests[2].params.summary, 'auto')
   assert.equal(f.spawns[0].handle.terminated, 1)
   assert.equal(f.bridgeCloses, 1)
+})
+
+test('Codex resumes a persisted thread with only the incremental prompt', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'thread-old',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() { throw new Error('unexpected fallback') },
+  }
+  const f = fixture({ nativeSession })
+  const run = await startCodexAppServerRun(f.deps, f.request)
+  await f.terminalGate
+  f.spawns[0].handle.send({ method: 'turn/completed', params: { threadId: 'thread-old', turn: { id: 'turn-1', status: 'completed' } } })
+  const result = await run.result
+
+  assert.equal(result.stopReason, 'completed')
+  assert.deepEqual(f.requests.map((request) => request.method), ['initialize', 'thread/resume', 'turn/start'])
+  assert.deepEqual(f.requests[1].params, {
+    threadId: 'thread-old',
+    cwd: '/workspace',
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+    model: 'gpt-5.6',
+    modelProvider: 'dsh-ally',
+  })
+  assert.equal(f.requests[2].params.input[0].text, 'USER\ncontinue')
+  assert.deepEqual(adopted, ['thread-old'])
+  assert.equal(f.spawns[0].spec.env.CODEX_HOME, '/managed-state/native/codex')
+})
+
+test('Codex replaces an invalid resume with one fresh persistent thread', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'thread-missing',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() {
+      this.mode = 'fresh'
+      this.vendorId = undefined
+      this.prompt = 'FULL CANONICAL HISTORY'
+    },
+  }
+  const f = fixture({ nativeSession, resumeFails: true })
+  const run = await startCodexAppServerRun(f.deps, f.request)
+  await f.terminalGate
+  f.spawns[0].handle.send({ method: 'turn/completed', params: { threadId: 'thread-2', turn: { id: 'turn-1', status: 'completed' } } })
+  const result = await run.result
+
+  assert.equal(result.stopReason, 'completed')
+  assert.deepEqual(f.requests.map((request) => request.method), ['initialize', 'thread/resume', 'thread/start', 'turn/start'])
+  assert.equal(f.requests[2].params.ephemeral, false)
+  assert.equal(f.requests[3].params.input[0].text, 'FULL CANONICAL HISTORY')
+  assert.deepEqual(adopted, ['thread-2'])
 })
 
 test('Codex cancellation sends turn/interrupt before terminating the app-server', async () => {

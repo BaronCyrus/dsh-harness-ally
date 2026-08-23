@@ -17,6 +17,7 @@
 - **CLI 自动检测与托管安装**：优先使用 `PATH` 中的全局 CLI；缺失时在 Harness 菜单内显示「安装」，安装到 DSH 自有目录，不使用 sudo。
 - **并行委派**：preset 同时提供 `subagent_claude_code`、`subagent_codex` 与 `subagent_kimi_code`。
 - **缓存可观测**：外部 Harness 的 uncached/cache-read/cache-write/reasoning token 会回到 DSH 原生 token meter，不再显示为零；同一 DSH session 同时作为 provider prompt-cache affinity key。
+- **原生会话续接**：连续使用相同 DSH session、Harness、provider 与 model 时，Claude Code、Codex 和 Kimi Code 会恢复各自的原生 session/thread，仅发送本轮增量消息；不连续、失败、配置变化或达到 32 个成功回合时自动安全 rollover。
 
 ## 环境要求
 
@@ -79,7 +80,10 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 - DSH 原生 token meter 用累计桶计算总用量与缓存命中率，用末次调用样本计算 context pressure；两种口径共用原生 UI，不新增第二套统计界面。
 - bridge 将 DSH session id 传给模型 route；支持 OpenAI Responses 的 DSH adapter 可据此派生稳定 `prompt_cache_key`。
 - Anthropic 的 per-block `cache_control` 无法进入 DSH provider-neutral message schema，因此由当前 DSH provider adapter 按其 `cacheRetention` 配置重新放置 system / last-tool / last-user cache breakpoint，而不是复制外部 CLI 的 wire 字段。
-- 本阶段仍保持每次前台回合创建新的 Claude 进程、Codex thread 与 Kimi ACP session；原生 session/thread 恢复属于下一阶段，避免在没有命中率基线前扩大生命周期风险。
+- 第一次运行或安全 rollover 会发送完整 DSH canonical history；只有上一回合成功且 turn 连续、Harness/provider/model 相同、system 与 sandbox fingerprint 未变化时，才恢复原生 session/thread 并发送最新用户消息增量。恢复路径不会再次发送完整历史，避免 native history 与文本化历史重复。
+- 原生会话 lane 严格按 `DSH session × Harness × provider × model` 隔离。状态采用带 revision 的 CAS 更新，同一 lane 在完整运行与释放结束前保持 singleflight；过期失败不能删除或覆盖更新的 vendor id。
+- resume id 只在干净的 `completed` 回合后提交；error/abort、同 turn 重试、turn 缺口、fingerprint 变化、原生 id 失效或 32 个连续成功回合都会回到“新原生会话 + 完整 canonical history”。无效 resume 最多在确认 prompt 尚未执行时透明回退一次。
+- 状态文件 v2 最多保留 200 个原生 lane；Claude、Codex 与 Kimi 的持久化数据位于 DSH state 下的托管目录，不进入用户 CLI 的普通会话列表。vendor session 是可丢弃缓存，DSH Session 日志始终是唯一 canonical history。
 
 双口径上下文修复需要 DSH 的 `TokenUsage` 与 token-meter 支持 `contextInputTokens` / `contextOutputTokens`。较旧的 DSH 构建会忽略新增字段：累计用量和缓存命中率仍正确，但上下文占用仍会按聚合输入计算。使用 v0.9.1 的上下文修复前，应先升级到包含该可选字段支持的 DSH 构建。
 
@@ -93,7 +97,7 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 - Agent signal 会终止整个外部进程树；Codex 先尝试 `turn/interrupt`，Kimi Code 先发送 `session/cancel`。
 - 非 `danger-full-access` 模式由 DSH 外层 `sandbox.confine()` 包裹。
 - prompt 通过 stdin、app-server RPC 或 ACP JSON-RPC 传输，不出现在 argv。
-- Kimi ACP 不声明文件 reverse-RPC 能力，文件与命令仍由受 DSH 外层 sandbox 包裹的 Kimi 子进程本地执行；前台 bridge 运行使用临时 `KIMI_CODE_HOME` 并在结束后删除。
+- Kimi ACP 不声明文件 reverse-RPC 能力，文件与命令仍由受 DSH 外层 sandbox 包裹的 Kimi 子进程本地执行；原生恢复使用 DSH state 下的托管 `KIMI_CODE_HOME`。Codex 使用托管 `CODEX_HOME`，Claude 使用托管 `CLAUDE_CONFIG_DIR`，不会改写用户的普通 CLI 会话目录。
 - bridge 仅监听 `127.0.0.1`，每个 route 使用随机 bearer token。
 - 错误诊断不会回传 CLI 原始 stderr、route token 或环境变量。
 - 当前前台外部 Harness 只接受文本上下文；包含图片时会明确提示切回 DeepSeek Harness，不会静默丢图。
@@ -106,13 +110,14 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 ├── cordis.patch.yml               # Web Profile 的 Host bundle patch
 ├── lib/
 │   ├── index.js                   # Host wiring、transport 与 teardown
-│   ├── runtime.js                 # Agent-loop router、实时 reasoning/activity 与最终校准
-│   ├── harness.js                 # Claude partial-message adapter
-│   ├── codex-app-server.js        # Codex app-server、delta、ephemeral thread、interrupt
-│   ├── kimi-acp.js                # Kimi ACP、临时模型注入、session/update、cancel
+│   ├── runtime.js                 # Agent-loop router、全量/增量 prompt、实时过程与最终校准
+│   ├── native-session.js          # 原生 lane singleflight、CAS、rollover 与持久化编排
+│   ├── harness.js                 # Claude partial messages、session persistence/resume
+│   ├── codex-app-server.js        # Codex app-server、persistent thread/resume、interrupt
+│   ├── kimi-acp.js                # Kimi ACP、durable session/load、恢复与 finalization
 │   ├── bridge.js                  # Messages/Responses → DSH LLM loopback bridge
 │   ├── cli-manager.js             # 全局优先/托管兜底的 CLI 生命周期
-│   ├── state.js                   # Session 日志外的选择与 badge 状态
+│   ├── state.js                   # Session 日志外的选择、badge 与原生 lane v2 状态
 │   └── client.js                  # Harness selector、安装按钮与徽标
 ├── test/                          # Node 回归测试
 ├── setup/install.mjs              # 跨平台、幂等的 Web Profile link 安装器
@@ -126,6 +131,7 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 ```bash
 npm test
 node --check lib/runtime.js
+node --check lib/native-session.js
 node --check lib/harness.js
 node --check lib/codex-app-server.js
 node --check lib/kimi-acp.js

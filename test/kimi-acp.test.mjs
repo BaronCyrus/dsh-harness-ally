@@ -27,6 +27,10 @@ function fixture({
   prematureMarkerBeforeTool = false,
   finalizationOmitsMarker = false,
   finalizationWhitespaceOnly = false,
+  nativeSession,
+  resumeAdvertised = true,
+  resumeFails = false,
+  loadReplay = false,
   skillLateMessageOnCancel = false,
   skillLateCompleteOnCancel = false,
   skillTitle = 'Skill',
@@ -42,6 +46,7 @@ function fixture({
   let bridgeCloses = 0
   let homeRemovals = 0
   const bridgeOpens = []
+  const createdDirectories = []
   let promptRequest
   let promptCount = 0
   let sessionCount = 0
@@ -56,6 +61,12 @@ function fixture({
       let resolveDone
       let terminated = 0
       const done = new Promise((resolve) => { resolveDone = resolve })
+      stdin.on('finish', () => queueMicrotask(() => {
+        if (terminated > 0) return
+        stdout.end()
+        stderr.end()
+        resolveDone({ exitCode: 0, signal: null })
+      }))
       const send = (value) => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`)
       stdin.on('data', (chunk) => {
         input += chunk.toString('utf8')
@@ -67,7 +78,28 @@ function fixture({
           const message = JSON.parse(line)
           messages.push(message)
           if (message.method === 'initialize') {
-            send({ id: message.id, result: { protocolVersion: 1, agentInfo: { name: 'Kimi Code CLI', version: 'test' } } })
+            send({ id: message.id, result: {
+              protocolVersion: 1,
+              agentCapabilities: {
+                loadSession: resumeAdvertised,
+                sessionCapabilities: resumeAdvertised ? { resume: {} } : {},
+              },
+              agentInfo: { name: 'Kimi Code CLI', version: 'test' },
+            } })
+          } else if (message.method === 'session/load') {
+            if (resumeFails) send({ id: message.id, error: { code: -32602, message: 'session not found' } })
+            else {
+              if (loadReplay) send({
+                method: 'session/update',
+                params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OLD REPLAY␞' } } },
+              })
+              send({ id: message.id, result: {
+              sessionId: message.params.sessionId,
+              configOptions: modeAdvertised ? [{
+                type: 'select', id: 'mode', currentValue: 'default', options: [{ value: 'auto', name: 'Auto' }],
+              }] : [],
+            } })
+            }
           } else if (message.method === 'session/new') {
             sessionCount += 1
             const response = { id: message.id, result: {
@@ -221,6 +253,8 @@ function fixture({
       async resolve() { return '/bin/kimi' },
     },
     bridge: { async open(...args) { bridgeOpens.push(args); return bridgeRoute } },
+    stateDir: '/managed-state',
+    async makeDirectory(path, options) { createdDirectories.push({ path, options }) },
     async makeTempDirectory(prefix) {
       assert.match(prefix, /dsh-ally-kimi-/)
       return '/tmp/dsh-ally-kimi-test'
@@ -237,9 +271,10 @@ function fixture({
     model: 'model',
     reasoningEffort: 'high',
     signal: controller.signal,
+    ...(nativeSession ? { nativeSession } : {}),
   }
   return {
-    deps, request, messages, spawns, terminalGate, recoverySessionGate, controller, bridgeOpens,
+    deps, request, messages, spawns, terminalGate, recoverySessionGate, controller, bridgeOpens, createdDirectories,
     completeRecoverySession() {
       if (!pendingRecoverySession) return
       spawns[0].handle.send(pendingRecoverySession)
@@ -304,7 +339,7 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
     'initialize', 'session/new', 'session/set_config_option', 'session/prompt',
   ])
-  assert.equal(f.messages[0].params.clientInfo.version, '0.9.3')
+  assert.equal(f.messages[0].params.clientInfo.version, '0.10.0')
   assert.deepEqual(f.messages[0].params.clientCapabilities.fs, { readTextFile: false, writeTextFile: false })
   assert.deepEqual(f.messages[2].params, { sessionId: 'session-kimi', configId: 'mode', value: 'auto' })
   assert.match(f.messages[3].params.prompt[0].text, /^do work\n\nKIMI CODE REPOSITORY SKILL POLICY/)
@@ -316,9 +351,94 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.deepEqual(f.messages.find((message) => message.id === 100 && !message.method)?.result, {
     outcome: { outcome: 'cancelled' },
   })
-  assert.equal(f.spawns[0].handle.terminated, 1)
+  assert.equal(f.spawns[0].handle.terminated, 0)
   assert.equal(f.bridgeCloses, 1)
   assert.equal(f.homeRemovals, 1)
+})
+
+test('Kimi resumes a durable ACP session with only the incremental prompt', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'session-kimi-old',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() { throw new Error('unexpected fallback') },
+  }
+  const f = fixture({ nativeSession, loadReplay: true })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+  f.spawns[0].handle.complete()
+  const result = await run.result
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(result.output[0].text, 'Hello')
+  assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
+    'initialize', 'session/load', 'session/set_config_option', 'session/prompt',
+  ])
+  assert.deepEqual(f.messages[1].params, { sessionId: 'session-kimi-old', cwd: '/workspace', mcpServers: [] })
+  assert.match(f.messages[3].params.prompt[0].text, /^USER\ncontinue\n\nKIMI CODE REPOSITORY SKILL POLICY/)
+  assert.deepEqual(adopted, ['session-kimi-old'])
+  assert.equal(f.spawns[0].spec.env.KIMI_CODE_HOME, '/managed-state/native/kimi')
+  assert.equal(f.homeRemovals, 0)
+})
+
+test('Kimi rolls over when the ACP server does not advertise session resume', async () => {
+  let fallbacks = 0
+  const adopted = []
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'session-kimi-old',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() {
+      fallbacks += 1
+      this.mode = 'fresh'
+      this.vendorId = undefined
+      this.prompt = 'FULL CANONICAL HISTORY'
+    },
+  }
+  const f = fixture({ nativeSession, resumeAdvertised: false })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+  f.spawns[0].handle.complete()
+  await run.result
+  await run.dispose()
+
+  assert.equal(fallbacks, 1)
+  assert.equal(f.messages.some((message) => message.method === 'session/load'), false)
+  assert.match(f.messages.find((message) => message.method === 'session/prompt').params.prompt[0].text, /^FULL CANONICAL HISTORY/)
+  assert.deepEqual(adopted, ['session-kimi'])
+})
+
+test('Kimi replaces an invalid resume with one fresh durable ACP session', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'session-kimi-missing',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() {
+      this.mode = 'fresh'
+      this.vendorId = undefined
+      this.prompt = 'FULL CANONICAL HISTORY'
+    },
+  }
+  const f = fixture({ nativeSession, resumeFails: true })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+  f.spawns[0].handle.complete()
+  const result = await run.result
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'completed')
+  assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
+    'initialize', 'session/load', 'session/new', 'session/set_config_option', 'session/prompt',
+  ])
+  assert.match(f.messages[4].params.prompt[0].text, /^FULL CANONICAL HISTORY\n\nKIMI CODE REPOSITORY SKILL POLICY/)
+  assert.deepEqual(adopted, ['session-kimi'])
+  assert.equal(f.homeRemovals, 0)
 })
 
 test('Kimi finalizes a tool turn when end_turn omits the completion marker', async () => {
@@ -380,8 +500,15 @@ test('Kimi rejects a marked finalization that adds only whitespace', async () =>
   assert.equal(result.diagnostic, 'Kimi Code 最终回答缺失')
 })
 
-test('Kimi cancels one stalled post-Skill request and recovers in a fresh ACP session', async () => {
-  const f = fixture({ skillStall: true, skillContinuationTimeoutMs: 10 })
+test('Kimi cancels one stalled post-Skill request and adopts the fresh ACP recovery session', async () => {
+  const adopted = []
+  const nativeSession = {
+    mode: 'fresh',
+    prompt: 'do work',
+    adopt(id) { adopted.push(id) },
+    async fallback() { throw new Error('unexpected fallback') },
+  }
+  const f = fixture({ skillStall: true, skillContinuationTimeoutMs: 10, nativeSession })
   const run = await startKimiAcpRun(f.deps, f.request)
   const eventPromise = collect(run.stream)
   await f.terminalGate
@@ -412,7 +539,9 @@ test('Kimi cancels one stalled post-Skill request and recovers in a fresh ACP se
     'session/prompt',
   ])
   assert.match(f.messages.filter((message) => message.method === 'session/prompt')[1].params.prompt[0].text, /\.agents\/skills\/understand-owmini-module\/SKILL\.md/)
-  assert.equal(f.spawns[0].handle.terminated, 1)
+  assert.deepEqual(adopted, ['session-kimi', 'session-kimi-recovery'])
+  assert.equal(f.homeRemovals, 0)
+  assert.equal(f.spawns[0].handle.terminated, 0)
 })
 
 test('Kimi disarms the Skill watchdog after fresh recovery completes a native tool', async () => {

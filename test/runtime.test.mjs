@@ -208,10 +208,17 @@ test('external prompts keep the Harness instruction, system, and prior history a
     ],
   }, fallback().next))
 
-  const first = starts[0].request.prompt[0].text
-  const second = starts[1].request.prompt[0].text
+  const firstRequest = starts[0].request
+  const secondRequest = starts[1].request
+  const first = firstRequest.prompt[0].text
+  const second = secondRequest.prompt[0].text
   assert.equal(first.endsWith('USER\nfirst'), true)
   assert.equal(second, `${first}\n\nASSISTANT\nanswer\n\nUSER\nsecond`)
+  assert.deepEqual(firstRequest.incrementalPrompt, [{ type: 'text', text: 'USER\nfirst' }])
+  assert.deepEqual(secondRequest.incrementalPrompt, [{ type: 'text', text: 'USER\nsecond' }])
+  assert.equal(secondRequest.promptSignature, firstRequest.promptSignature)
+  assert.equal(firstRequest.turn, 1)
+  assert.equal(secondRequest.turn, 2)
 })
 
 test('external Harness emits one standard usage sample even when the provider omits metrics', async () => {
