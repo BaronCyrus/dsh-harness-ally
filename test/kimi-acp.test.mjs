@@ -18,6 +18,7 @@ function fixture({ modeAdvertised = true } = {}) {
   const controller = new AbortController()
   let bridgeCloses = 0
   let homeRemovals = 0
+  const bridgeOpens = []
   let promptRequest
   const subprocess = {
     async resolveExecutable(command) { return `/bin/${command}` },
@@ -97,6 +98,7 @@ function fixture({ modeAdvertised = true } = {}) {
   const bridgeRoute = {
     token: 'route-token',
     claudeBaseUrl: 'http://127.0.0.1:9999/claude/route',
+    usage() { return { inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5 } },
     close() { bridgeCloses += 1 },
   }
   const deps = {
@@ -108,7 +110,7 @@ function fixture({ modeAdvertised = true } = {}) {
       managedRoot: '/managed/dsh-ally',
       async resolve() { return '/bin/kimi' },
     },
-    bridge: { async open() { return bridgeRoute } },
+    bridge: { async open(...args) { bridgeOpens.push(args); return bridgeRoute } },
     async makeTempDirectory(prefix) {
       assert.match(prefix, /dsh-ally-kimi-/)
       return '/tmp/dsh-ally-kimi-test'
@@ -119,7 +121,7 @@ function fixture({ modeAdvertised = true } = {}) {
     },
   }
   const request = {
-    parent: { session: { header: { cwd: '/workspace', agentPreset: 'harness-ally' } } },
+    parent: { session: { id: 'session-1', header: { cwd: '/workspace', agentPreset: 'harness-ally' } } },
     prompt: [{ type: 'text', text: 'do work' }],
     provider: 'provider',
     model: 'model',
@@ -127,7 +129,7 @@ function fixture({ modeAdvertised = true } = {}) {
     signal: controller.signal,
   }
   return {
-    deps, request, messages, spawns, terminalGate, controller,
+    deps, request, messages, spawns, terminalGate, controller, bridgeOpens,
     get bridgeCloses() { return bridgeCloses },
     get homeRemovals() { return homeRemovals },
   }
@@ -151,7 +153,11 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
     { type: 'text-delta', text: 'lo' },
     { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'completed' },
   ])
-  assert.deepEqual(result, { output: [{ type: 'text', text: 'Hello' }], stopReason: 'completed' })
+  assert.deepEqual(result, {
+    output: [{ type: 'text', text: 'Hello' }],
+    stopReason: 'completed',
+    usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5 },
+  })
   assert.deepEqual(f.spawns[0].spec.argv, ['/bin/kimi', 'acp'])
   assert.equal(f.spawns[0].spec.argv.join(' ').includes('do work'), false)
   assert.equal(f.spawns[0].spec.argv.join(' ').includes('route-token'), false)
@@ -161,10 +167,11 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.equal(f.spawns[0].spec.env.KIMI_MODEL_BASE_URL, 'http://127.0.0.1:9999/claude/route')
   assert.equal(f.spawns[0].spec.env.KIMI_MODEL_THINKING_EFFORT, 'high')
   assert.equal(f.spawns[0].spec.env.KIMI_CODE_HOME, '/tmp/dsh-ally-kimi-test')
+  assert.equal(f.bridgeOpens[0][2].sessionId, 'session-1')
   assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
     'initialize', 'session/new', 'session/set_config_option', 'session/prompt',
   ])
-  assert.equal(f.messages[0].params.clientInfo.version, '0.8.0')
+  assert.equal(f.messages[0].params.clientInfo.version, '0.9.0')
   assert.deepEqual(f.messages[0].params.clientCapabilities.fs, { readTextFile: false, writeTextFile: false })
   assert.deepEqual(f.messages[2].params, { sessionId: 'session-kimi', configId: 'mode', value: 'auto' })
   assert.equal(f.messages[3].params.prompt[0].text, 'do work')

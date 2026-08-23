@@ -183,6 +183,80 @@ test('external prompt identifies the selected Harness separately from its DSH ho
   }
 })
 
+test('external prompts keep the Harness instruction, system, and prior history as a stable prefix', async () => {
+  const { runtime, session, starts } = fixture({ harness: 'kimi-code' })
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+
+  await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    system: 'stable system',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'first' }] }],
+  }, fallback().next))
+
+  session.append('turn/start', { turn: 2 })
+  session.append('step/start', { turn: 2, step: 1 })
+  await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    system: 'stable system',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'first' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      { role: 'user', content: [{ type: 'text', text: 'second' }] },
+    ],
+  }, fallback().next))
+
+  const first = starts[0].request.prompt[0].text
+  const second = starts[1].request.prompt[0].text
+  assert.equal(first.endsWith('USER\nfirst'), true)
+  assert.equal(second, `${first}\n\nASSISTANT\nanswer\n\nUSER\nsecond`)
+})
+
+test('external Harness emits one standard usage sample even when the provider omits metrics', async () => {
+  const { runtime, session } = fixture({ harness: 'codex' })
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+
+  const chunks = await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'work' }] }],
+  }, fallback().next))
+
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'usage'), [{
+    type: 'usage', usage: { inputTokens: 0, outputTokens: 0 },
+  }])
+  assert.equal(chunks.at(-1).type, 'finish')
+})
+
+test('external Harness usage reaches the normal DSH model stream with disjoint cache buckets', async () => {
+  const usage = {
+    inputTokens: 12,
+    outputTokens: 7,
+    cacheReadTokens: 90,
+    cacheWriteTokens: 5,
+  }
+  const { runtime, session } = fixture({
+    harness: 'kimi-code',
+    result: { output: [{ type: 'text', text: 'done' }], stopReason: 'completed', usage },
+  })
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+
+  const chunks = await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'work' }] }],
+  }, fallback().next))
+
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'usage'), [{ type: 'usage', usage }])
+  const types = chunks.map((chunk) => chunk.type)
+  assert.equal(types.lastIndexOf('block-end') < types.indexOf('usage'), true)
+  assert.equal(types.at(-1), 'finish')
+})
+
 test('external Harness owns only the model adapter while Agent owns the turn', async () => {
   const { runtime, session, starts, persists, recordedDispatches } = fixture({ harness: 'codex' })
   session.append('turn/start', { turn: 3 })
@@ -221,7 +295,7 @@ test('external Harness owns only the model adapter while Agent owns the turn', a
   assert.equal(dispatch.started, true)
   assert.deepEqual(persists, [session.id, session.id])
   assert.deepEqual(chunks.map((chunk) => chunk.type), [
-    'block-start', 'reasoning-delta', 'block-start', 'text-delta', 'block-end', 'block-end', 'finish',
+    'block-start', 'reasoning-delta', 'block-start', 'text-delta', 'block-end', 'block-end', 'usage', 'finish',
   ])
   assert.equal(chunks.at(-1).reason.kind, 'stop')
 })
@@ -297,7 +371,7 @@ test('external Harness forwards text deltas before its process completes', async
     if (next.done) break
     tail.push(next.value)
   }
-  assert.deepEqual(tail.map((chunk) => chunk.type), ['block-end', 'block-end', 'finish'])
+  assert.deepEqual(tail.map((chunk) => chunk.type), ['block-end', 'block-end', 'usage', 'finish'])
   assert.equal(tail.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'text').block.text, 'first')
 })
 

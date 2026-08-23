@@ -22,6 +22,15 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 9. bridge token、CLI stderr、环境变量和本机凭据不得进入用户诊断或仓库。
 10. 所有进程、临时目录、route、signal 监听器和队列必须可取消且幂等释放。
 
+## Cache invariants
+
+1. `harnessPrompt()` 的固定 Harness 指令、system 与已有消息必须构成逐字节稳定前缀；新增上下文只能追加在尾部。
+2. 一轮外部 Harness 可触发多个底层模型请求；bridge route 必须累计所有请求的互斥 `TokenUsage` 桶，再由外层 `runtime.route()` 在 `finish` 前恰好发送一次 `usage`。
+3. `inputTokens` 不包含 cache read/write；`reasoningTokens` 已包含在 `outputTokens`，不得重复相加。
+4. route 使用 DSH session id 作为 provider affinity 输入；不得使用每回合随机 run id，否则会破坏 Responses prompt cache locality。
+5. 外部 wire 的 cache breakpoint 字段只有在 DSH provider-neutral schema 能无损表达时才允许透传；当前 Anthropic breakpoint 由 DSH adapter 的 `cacheRetention` 策略重建。
+6. 修改 prompt 顺序、system、tools、bridge usage 或 session affinity 时，必须增加字面前缀/usage 桶测试并报告完整测试结果。
+
 ## Tests
 
 ```bash
@@ -33,7 +42,7 @@ node --check lib/codex-app-server.js
 node --check lib/kimi-acp.js
 ```
 
-测试覆盖选择隔离、同源写保护、CLI 托管、模型桥、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、只读 reasoning/activity、最终文本校准和 Host teardown。
+测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、只读 reasoning/activity、最终文本校准和 Host teardown。
 
 ## Local iteration
 

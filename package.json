@@ -1,7 +1,7 @@
 {
   "name": "dsh-ally",
-  "version": "0.8.0",
-  "description": "Harness Alliance Mode for DeepSeek Harness with DSH-routed Claude Code, Codex, and Kimi Code execution.",
+  "version": "0.9.0",
+  "description": "Cache-aware Harness Alliance Mode for DeepSeek Harness with DSH-routed Claude Code, Codex, and Kimi Code execution.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.cjs test/*.test.mjs"

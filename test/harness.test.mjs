@@ -8,6 +8,7 @@ function fixture(events = {}) {
   const spawns = []
   const resolves = []
   const confined = []
+  const bridgeOpens = []
   const subprocess = {
     async resolveExecutable(command) {
       resolves.push(command)
@@ -67,10 +68,10 @@ function fixture(events = {}) {
     authorize(session) {
       if (session?.header?.agentPreset !== 'harness-ally') throw new Error('preset required')
     },
-    bridge: events.bridge ? { async open() { return events.bridge } } : undefined,
+    bridge: events.bridge ? { async open(...args) { bridgeOpens.push(args); return events.bridge } } : undefined,
     cliManager: events.cliManager,
   })
-  return { gateway, spawns, resolves, confined }
+  return { gateway, spawns, resolves, confined, bridgeOpens }
 }
 
 async function collect(iterable) {
@@ -82,7 +83,7 @@ async function collect(iterable) {
 function request(prompt = 'do secret work', preset = 'harness-ally') {
   return {
     prompt: [{ type: 'text', text: prompt }],
-    parent: { session: { header: { cwd: '/workspace', agentPreset: preset } } },
+    parent: { session: { id: 'session-1', header: { cwd: '/workspace', agentPreset: preset } } },
     signal: new AbortController().signal,
   }
 }
@@ -171,6 +172,7 @@ test('foreground Claude routes the configured provider/model without putting its
     token: 'secret-route-token',
     claudeBaseUrl: 'http://127.0.0.1:1234/claude/route',
     codexBaseUrl: 'http://127.0.0.1:1234/codex/route/v1',
+    usage() { return { inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5 } },
     close() { closed += 1 },
   }
   const f = fixture({ bridge, stdout: [JSON.stringify({ type: 'result', subtype: 'success', result: 'OK' })] })
@@ -178,12 +180,14 @@ test('foreground Claude routes the configured provider/model without putting its
   const run = await f.gateway.start('claude-code', {
     ...request('task'), provider: 'configured-provider', model: 'configured-model',
   })
-  await run.result
+  const result = await run.result
 
   const argv = f.spawns[0].spec.argv
   assert.equal(argv.includes('--bare'), true)
   assert.equal(argv.join(' ').includes('secret-route-token'), false)
   assert.equal(f.spawns[0].spec.env.ANTHROPIC_API_KEY, 'secret-route-token')
+  assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5 })
+  assert.equal(f.bridgeOpens[0][2].sessionId, 'session-1')
   assert.equal(closed, 1)
 })
 

@@ -16,6 +16,7 @@
 - **不会重复执行工具**：外部活动绝不伪装成 DSH tool call，因此 Standard Agent 不会把同一命令再执行一次。
 - **CLI 自动检测与托管安装**：优先使用 `PATH` 中的全局 CLI；缺失时在 Harness 菜单内显示「安装」，安装到 DSH 自有目录，不使用 sudo。
 - **并行委派**：preset 同时提供 `subagent_claude_code`、`subagent_codex` 与 `subagent_kimi_code`。
+- **缓存可观测**：外部 Harness 的 uncached/cache-read/cache-write/reasoning token 会回到 DSH 原生 token meter，不再显示为零；同一 DSH session 同时作为 provider prompt-cache affinity key。
 
 ## 环境要求
 
@@ -69,6 +70,15 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 - 运行结束立即撤销 route，Host 停止时关闭 loopback server。
 
 外部 Harness 不需要复制 DSH provider key，也不需要维护第二份模型列表。
+
+### 缓存治理
+
+- 外部 prompt 固定以 Harness 指令和 DSH system prompt 开头，后续历史只向尾部增长；不再把固定 Harness 指令放在每轮易变尾部。
+- bridge 把 DSH `TokenUsage` 的互斥桶完整映射回 Anthropic Messages / OpenAI Responses，再按一轮外部 Harness 内的所有原生模型请求累计；最终只向外层 DSH stream 发送一次 `usage`。
+- `inputTokens` 只表示未缓存输入，`cacheReadTokens` / `cacheWriteTokens` 独立计量，`reasoningTokens` 是 output 子集；DSH 原生 token meter 与 context pressure 可直接消费，不新增第二套统计 UI。
+- bridge 将 DSH session id 传给模型 route；支持 OpenAI Responses 的 DSH adapter 可据此派生稳定 `prompt_cache_key`。
+- Anthropic 的 per-block `cache_control` 无法进入 DSH provider-neutral message schema，因此由当前 DSH provider adapter 按其 `cacheRetention` 配置重新放置 system / last-tool / last-user cache breakpoint，而不是复制外部 CLI 的 wire 字段。
+- 本阶段仍保持每次前台回合创建新的 Claude 进程、Codex thread 与 Kimi ACP session；原生 session/thread 恢复属于下一阶段，避免在没有命中率基线前扩大生命周期风险。
 
 ### 实时过程与安全边界
 

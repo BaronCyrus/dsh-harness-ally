@@ -17,6 +17,7 @@ function fixture() {
   const terminalGate = new Promise((resolve) => { terminal = resolve })
   const controller = new AbortController()
   let bridgeCloses = 0
+  const bridgeOpens = []
   const subprocess = {
     async resolveExecutable(command) { return `/bin/${command}` },
     spawn(spec) {
@@ -77,6 +78,7 @@ function fixture() {
   const bridgeRoute = {
     token: 'route-token',
     codexBaseUrl: 'http://127.0.0.1:9999/codex/route/v1',
+    usage() { return { inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5 } },
     close() { bridgeCloses += 1 },
   }
   const deps = {
@@ -85,17 +87,17 @@ function fixture() {
     policyFor: () => ({ mode: 'danger-full-access' }),
     authorize() {},
     cliManager: { async resolve() { return '/bin/codex' } },
-    bridge: { async open() { return bridgeRoute } },
+    bridge: { async open(...args) { bridgeOpens.push(args); return bridgeRoute } },
   }
   const request = {
-    parent: { session: { header: { cwd: '/workspace', agentPreset: 'harness-ally' } } },
+    parent: { session: { id: 'session-1', header: { cwd: '/workspace', agentPreset: 'harness-ally' } } },
     prompt: [{ type: 'text', text: 'do work' }],
     provider: 'provider',
     model: 'model',
     reasoningEffort: 'high',
     signal: controller.signal,
   }
-  return { deps, request, requests, spawns, terminalGate, controller, get bridgeCloses() { return bridgeCloses } }
+  return { deps, request, requests, spawns, terminalGate, controller, bridgeOpens, get bridgeCloses() { return bridgeCloses } }
 }
 
 test('Codex app-server streams dedicated agent message deltas without snapshot duplication', async () => {
@@ -116,10 +118,12 @@ test('Codex app-server streams dedicated agent message deltas without snapshot d
   ])
   assert.equal(result.output[0].text, 'Hello')
   assert.equal(result.stopReason, 'completed')
+  assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5 })
+  assert.equal(f.bridgeOpens[0][2].sessionId, 'session-1')
   assert.equal(f.spawns[0].spec.argv[1], 'app-server')
   assert.equal(f.spawns[0].spec.argv.includes('exec'), false)
   assert.deepEqual(f.requests.map((request) => request.method), ['initialize', 'thread/start', 'turn/start'])
-  assert.equal(f.requests[0].params.clientInfo.version, '0.8.0')
+  assert.equal(f.requests[0].params.clientInfo.version, '0.9.0')
   assert.equal(f.requests[0].params.capabilities.experimentalApi, true)
   assert.equal(f.requests[1].params.modelProvider, 'dsh-ally')
   assert.equal(f.requests[1].params.ephemeral, true)

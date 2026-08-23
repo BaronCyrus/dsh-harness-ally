@@ -27,6 +27,9 @@ const textChunks = [
   { type: 'block-start', index: 0, blockType: 'text' },
   { type: 'text-delta', index: 0, text: 'BRIDGE_OK' },
   { type: 'block-end', index: 0, block: { type: 'text', text: 'BRIDGE_OK' } },
+  { type: 'usage', usage: {
+    inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5, reasoningTokens: 3,
+  } },
   { type: 'finish', reason: { kind: 'stop' } },
 ]
 
@@ -34,7 +37,7 @@ test('Claude bridge routes one native Messages request through the selected DSH 
   const f = fixture(textChunks)
   try {
     const route = await f.bridge.open('configured-provider', 'configured-model', {
-      reasoningEffort: 'high', temperature: 0.3, maxTokens: 2048, stop: ['STOP'],
+      reasoningEffort: 'high', temperature: 0.3, maxTokens: 2048, stop: ['STOP'], sessionId: 'dsh-session-1',
     })
     const response = await fetch(`${route.claudeBaseUrl}/v1/messages`, {
       method: 'POST',
@@ -57,7 +60,64 @@ test('Claude bridge routes one native Messages request through the selected DSH 
     assert.equal(f.calls[0].temperature, 0.3)
     assert.equal(f.calls[0].maxTokens, 2048)
     assert.deepEqual(f.calls[0].stop, ['STOP'])
+    assert.equal(f.calls[0].sessionId, 'dsh-session-1')
     assert.equal(f.calls[0].messages[0].content[0].text, 'hello')
+    const delta = sseData(body).find((event) => event.type === 'message_delta')
+    assert.deepEqual(delta.usage, {
+      input_tokens: 12,
+      output_tokens: 7,
+      cache_read_input_tokens: 90,
+      cache_creation_input_tokens: 5,
+    })
+    assert.deepEqual(route.usage(), {
+      inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5, reasoningTokens: 3,
+    })
+    route.close()
+  } finally {
+    await f.bridge.close()
+  }
+})
+
+test('bridge accumulates cache usage across every native model call in one Harness run', async () => {
+  const f = fixture(textChunks)
+  try {
+    const route = await f.bridge.open('provider', 'model', { sessionId: 'session-aggregate' })
+    for (const prompt of ['first', 'second']) {
+      const response = await fetch(`${route.claudeBaseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': route.token },
+        body: JSON.stringify({ model: 'model', stream: true, messages: [{ role: 'user', content: prompt }] }),
+      })
+      await response.text()
+    }
+
+    assert.deepEqual(route.usage(), {
+      inputTokens: 24, outputTokens: 14, cacheReadTokens: 180, cacheWriteTokens: 10, reasoningTokens: 6,
+    })
+    route.close()
+  } finally {
+    await f.bridge.close()
+  }
+})
+
+test('bridge preserves explicitly reported zero-valued cache buckets', async () => {
+  const chunks = [
+    { type: 'usage', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+  const f = fixture(chunks)
+  try {
+    const route = await f.bridge.open('provider', 'model')
+    const response = await fetch(`${route.claudeBaseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': route.token },
+      body: JSON.stringify({ model: 'model', stream: true, messages: [{ role: 'user', content: 'hello' }] }),
+    })
+    await response.text()
+
+    assert.deepEqual(route.usage(), {
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+    })
     route.close()
   } finally {
     await f.bridge.close()
@@ -124,6 +184,16 @@ test('Codex bridge exposes Responses SSE and rejects an invalid route token', as
     assert.deepEqual(events.map((event) => event.sequence_number), events.map((_, index) => index))
     const completed = events.find((event) => event.type === 'response.completed')
     assert.equal(completed.response.output[0].content[0].text, 'BRIDGE_OK')
+    assert.deepEqual(completed.response.usage, {
+      input_tokens: 107,
+      input_tokens_details: { cached_tokens: 90 },
+      output_tokens: 7,
+      output_tokens_details: { reasoning_tokens: 3 },
+      total_tokens: 114,
+    })
+    assert.deepEqual(route.usage(), {
+      inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5, reasoningTokens: 3,
+    })
     assert.equal(f.calls[0].provider, 'custom-openai')
     assert.equal(f.calls[0].messages[0].content[0].text, 'hello codex')
     route.close()
