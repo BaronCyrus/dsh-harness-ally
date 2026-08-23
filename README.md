@@ -1,5 +1,7 @@
 # Harness联盟模式（DSH Agent Preset）
 
+<img width="1450" height="540" alt="image" src="https://github.com/user-attachments/assets/9735076f-7507-4653-b5f0-fe7c329c3270" />
+
 让 DeepSeek Harness、Claude Code、Codex 和 Kimi Code 共享同一个 DSH 会话生命周期，并与 DSH 原生模型选择器自由组合。
 
 - **模型**仍由 DSH 原生模型选择器决定，自动使用当前已配置的全部 provider/model。
