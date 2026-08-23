@@ -9,9 +9,10 @@ function fixture(chunks) {
   const bridge = createModelBridge({
     llm: {
       stream(options) {
+        const streamChunks = typeof chunks === 'function' ? chunks(calls.length) : chunks
         calls.push(options)
         return (async function* () {
-          yield* chunks
+          yield* streamChunks
         })()
       },
     },
@@ -70,7 +71,13 @@ test('Claude bridge routes one native Messages request through the selected DSH 
       cache_creation_input_tokens: 5,
     })
     assert.deepEqual(route.usage(), {
-      inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5, reasoningTokens: 3,
+      inputTokens: 12,
+      outputTokens: 7,
+      cacheReadTokens: 90,
+      cacheWriteTokens: 5,
+      reasoningTokens: 3,
+      contextInputTokens: 107,
+      contextOutputTokens: 7,
     })
     route.close()
   } finally {
@@ -78,8 +85,12 @@ test('Claude bridge routes one native Messages request through the selected DSH 
   }
 })
 
-test('bridge accumulates cache usage across every native model call in one Harness run', async () => {
-  const f = fixture(textChunks)
+test('bridge accumulates billing across calls while context usage follows only the latest call', async () => {
+  const f = fixture((callIndex) => textChunks.map((chunk) => chunk.type === 'usage'
+    ? { ...chunk, usage: callIndex === 0
+      ? chunk.usage
+      : { inputTokens: 20, outputTokens: 9, cacheReadTokens: 100, cacheWriteTokens: 6, reasoningTokens: 4 } }
+    : chunk))
   try {
     const route = await f.bridge.open('provider', 'model', { sessionId: 'session-aggregate' })
     for (const prompt of ['first', 'second']) {
@@ -92,8 +103,72 @@ test('bridge accumulates cache usage across every native model call in one Harne
     }
 
     assert.deepEqual(route.usage(), {
-      inputTokens: 24, outputTokens: 14, cacheReadTokens: 180, cacheWriteTokens: 10, reasoningTokens: 6,
+      inputTokens: 32,
+      outputTokens: 16,
+      cacheReadTokens: 190,
+      cacheWriteTokens: 11,
+      reasoningTokens: 7,
+      contextInputTokens: 126,
+      contextOutputTokens: 9,
     })
+    route.close()
+  } finally {
+    await f.bridge.close()
+  }
+})
+
+test('bridge ignores invalid explicit context samples and derives the latest valid buckets', async () => {
+  const chunks = [
+    { type: 'usage', usage: {
+      inputTokens: 12,
+      outputTokens: 7,
+      cacheReadTokens: 90,
+      cacheWriteTokens: 5,
+      contextInputTokens: -1,
+      contextOutputTokens: Number.NaN,
+    } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+  const f = fixture(chunks)
+  try {
+    const route = await f.bridge.open('provider', 'model')
+    const response = await fetch(`${route.claudeBaseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': route.token },
+      body: JSON.stringify({ model: 'model', stream: true, messages: [{ role: 'user', content: 'hello' }] }),
+    })
+    await response.text()
+
+    assert.equal(route.usage().contextInputTokens, 107)
+    assert.equal(route.usage().contextOutputTokens, 7)
+    route.close()
+  } finally {
+    await f.bridge.close()
+  }
+})
+
+test('bridge derives context pressure only from validated usage buckets', async () => {
+  const chunks = [
+    { type: 'usage', usage: {
+      inputTokens: Number.NaN,
+      outputTokens: 7,
+      cacheReadTokens: 90,
+      cacheWriteTokens: 5,
+    } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+  const f = fixture(chunks)
+  try {
+    const route = await f.bridge.open('provider', 'model')
+    const response = await fetch(`${route.claudeBaseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': route.token },
+      body: JSON.stringify({ model: 'model', stream: true, messages: [{ role: 'user', content: 'hello' }] }),
+    })
+    await response.text()
+
+    assert.equal(route.usage().inputTokens, 0)
+    assert.equal(route.usage().contextInputTokens, 95)
     route.close()
   } finally {
     await f.bridge.close()
@@ -116,7 +191,13 @@ test('bridge preserves explicitly reported zero-valued cache buckets', async () 
     await response.text()
 
     assert.deepEqual(route.usage(), {
-      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      contextInputTokens: 0,
+      contextOutputTokens: 0,
     })
     route.close()
   } finally {
@@ -192,7 +273,13 @@ test('Codex bridge exposes Responses SSE and rejects an invalid route token', as
       total_tokens: 114,
     })
     assert.deepEqual(route.usage(), {
-      inputTokens: 12, outputTokens: 7, cacheReadTokens: 90, cacheWriteTokens: 5, reasoningTokens: 3,
+      inputTokens: 12,
+      outputTokens: 7,
+      cacheReadTokens: 90,
+      cacheWriteTokens: 5,
+      reasoningTokens: 3,
+      contextInputTokens: 107,
+      contextOutputTokens: 7,
     })
     assert.equal(f.calls[0].provider, 'custom-openai')
     assert.equal(f.calls[0].messages[0].content[0].text, 'hello codex')

@@ -231,12 +231,14 @@ test('external Harness emits one standard usage sample even when the provider om
   assert.equal(chunks.at(-1).type, 'finish')
 })
 
-test('external Harness usage reaches the normal DSH model stream with disjoint cache buckets', async () => {
+test('external Harness usage keeps aggregate billing and latest-call context samples disjoint', async () => {
   const usage = {
     inputTokens: 12,
     outputTokens: 7,
     cacheReadTokens: 90,
     cacheWriteTokens: 5,
+    contextInputTokens: 37,
+    contextOutputTokens: 4,
   }
   const { runtime, session } = fixture({
     harness: 'kimi-code',

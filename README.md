@@ -75,10 +75,13 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 
 - 外部 prompt 固定以 Harness 指令和 DSH system prompt 开头，后续历史只向尾部增长；不再把固定 Harness 指令放在每轮易变尾部。
 - bridge 把 DSH `TokenUsage` 的互斥桶完整映射回 Anthropic Messages / OpenAI Responses，再按一轮外部 Harness 内的所有原生模型请求累计；最终只向外层 DSH stream 发送一次 `usage`。
-- `inputTokens` 只表示未缓存输入，`cacheReadTokens` / `cacheWriteTokens` 独立计量，`reasoningTokens` 是 output 子集；DSH 原生 token meter 与 context pressure 可直接消费，不新增第二套统计 UI。
+- `inputTokens` 只表示累计未缓存输入，`cacheReadTokens` / `cacheWriteTokens` 独立累计，`reasoningTokens` 是累计 output 子集；额外的 `contextInputTokens` / `contextOutputTokens` 只保留末次内部模型调用，避免多次调用的累计计费量把上下文占用率错误推到 100%。
+- DSH 原生 token meter 用累计桶计算总用量与缓存命中率，用末次调用样本计算 context pressure；两种口径共用原生 UI，不新增第二套统计界面。
 - bridge 将 DSH session id 传给模型 route；支持 OpenAI Responses 的 DSH adapter 可据此派生稳定 `prompt_cache_key`。
 - Anthropic 的 per-block `cache_control` 无法进入 DSH provider-neutral message schema，因此由当前 DSH provider adapter 按其 `cacheRetention` 配置重新放置 system / last-tool / last-user cache breakpoint，而不是复制外部 CLI 的 wire 字段。
 - 本阶段仍保持每次前台回合创建新的 Claude 进程、Codex thread 与 Kimi ACP session；原生 session/thread 恢复属于下一阶段，避免在没有命中率基线前扩大生命周期风险。
+
+双口径上下文修复需要 DSH 的 `TokenUsage` 与 token-meter 支持 `contextInputTokens` / `contextOutputTokens`。较旧的 DSH 构建会忽略新增字段：累计用量和缓存命中率仍正确，但上下文占用仍会按聚合输入计算。使用 v0.9.1 的上下文修复前，应先升级到包含该可选字段支持的 DSH 构建。
 
 ### 实时过程与安全边界
 
