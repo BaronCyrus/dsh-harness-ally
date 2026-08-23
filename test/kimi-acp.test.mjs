@@ -376,14 +376,22 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.equal(f.homeRemovals, 1)
 })
 
-test('Kimi bounds graceful session flushing before terminating a stuck ACP process', async () => {
-  const f = fixture({ ignoreGracefulExit: true, sessionFlushTimeoutMs: 1 })
+test('Kimi bounds graceful session flushing and discards a stuck native session', async () => {
+  let discards = 0
+  const nativeSession = {
+    mode: 'fresh',
+    prompt: 'do work',
+    adopt() {},
+    async discard() { discards += 1 },
+  }
+  const f = fixture({ ignoreGracefulExit: true, sessionFlushTimeoutMs: 1, nativeSession })
   const run = await startKimiAcpRun(f.deps, f.request)
   await f.terminalGate
   f.spawns[0].handle.complete()
   assert.equal((await run.result).stopReason, 'completed')
   await run.dispose()
   assert.equal(f.spawns[0].handle.terminated, 1)
+  assert.equal(discards, 1)
 })
 
 test('Kimi resumes a durable ACP session with only the incremental prompt', async () => {

@@ -40,7 +40,7 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 5. 一个 lane 从启动到 `dispose()` 完成必须 singleflight；后续运行不得与尚未释放的 CLI 进程共享同一原生 session。
 6. 原生 id 无效时只允许在 prompt 尚未执行的握手阶段回退一次：Codex `thread/resume → thread/start`、Kimi `session/load → session/new`、Claude 精确识别无会话错误后重新 spawn。运行中失败禁止自动重放，避免重复副作用。
 7. turn 缺口、fingerprint 变化或 32 个连续成功回合触发安全 rollover；状态最多保留 200 个 lane，淘汰只影响优化，不影响正确性。
-8. Kimi `session/load` 的历史 replay update 不得进入当前 DSH stream；成功回合先关闭 ACP stdin 并有界等待进程自然退出以刷盘，超时才终止；Skill watchdog 的 fresh recovery 必须携带完整 canonical history，其新 session 是本回合释放后提交的最终 vendor id。
+8. Kimi `session/load` 的历史 replay update 不得进入当前 DSH stream；成功回合先关闭 ACP stdin 并有界等待进程自然退出以刷盘，超时则丢弃该 vendor id 后终止；Skill watchdog 的 fresh recovery 必须携带完整 canonical history，其新 session 是本回合释放后提交的最终 vendor id。
 
 ## Tests
 

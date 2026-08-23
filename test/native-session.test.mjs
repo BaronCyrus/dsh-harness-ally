@@ -104,6 +104,34 @@ test('a completed vendor id is committed only after the native process is dispos
   }
 })
 
+test('a completed run can discard an unflushed vendor session during disposal', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-discard-'))
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 10 })
+    const key = JSON.stringify(['session-1', 'codex', 'provider-a', 'model-a'])
+    const run = await registry.start(parts(1), async (context) => {
+      context.adopt('vendor-unflushed')
+      return {
+        ...completedRun(),
+        async dispose() { await context.discard() },
+      }
+    })
+    assert.equal((await run.result).stopReason, 'completed')
+    await run.dispose()
+    assert.equal(state.resume(key), undefined)
+    const retry = await registry.start(parts(1), async (context) => {
+      assert.equal(context.mode, 'fresh')
+      return completedRun()
+    })
+    await retry.result
+    await retry.dispose()
+    await state.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('invalid native resume falls back to the full canonical prompt and adopts the replacement session', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-fallback-'))
   const file = join(directory, 'state.json')
