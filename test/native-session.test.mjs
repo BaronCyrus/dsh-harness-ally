@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import { createNativeSessionRegistry } from '../lib/native-session.js'
+import { createConversationView } from '../lib/runtime.js'
 import { createAllianceState } from '../lib/state.js'
 
 function completedRun(text = 'ok') {
@@ -79,6 +80,129 @@ test('consecutive successful turns resume one isolated native session with only 
     assert.equal(secondContext.mode, 'resume')
     assert.equal(secondContext.vendorId, 'vendor-1')
     assert.equal(secondContext.prompt, 'USER\nsecond')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a parked lane resumes across a restart and Harness gap with only its proven handoff', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-parked-'))
+  const file = join(directory, 'state.json')
+  try {
+    const firstState = await createAllianceState({ file })
+    const firstRegistry = createNativeSessionRegistry({ state: firstState, version: 'test-version', now: () => 10 })
+    await runCompleted(firstRegistry, parts(1, {
+      conversation: {
+        watermarkAfter: () => ({ messageCount: 2, digest: 'anchor-one' }),
+        resumeFrom: () => undefined,
+      },
+    }), 'vendor-1')
+    await firstState.close()
+
+    const state = await createAllianceState({ file })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 20 })
+    await runCompleted(registry, parts(3, {
+      fullPrompt: 'FULL CANONICAL THROUGH TURN 3',
+      incrementalPrompt: 'USER\ncurrent request',
+      conversation: {
+        watermarkAfter: () => ({ messageCount: 6, digest: 'anchor-three' }),
+        resumeFrom(watermark) {
+          assert.deepEqual(watermark, { messageCount: 2, digest: 'anchor-one' })
+          return 'HARNESS HANDOFF\n\nTURN 2 HISTORY\n\nCURRENT REQUEST\n\nUSER\ncurrent request'
+        },
+      },
+    }), 'vendor-1', (context) => {
+      assert.equal(context.mode, 'resume')
+      assert.equal(context.vendorId, 'vendor-1')
+      assert.match(context.prompt, /^HARNESS HANDOFF/)
+      assert.doesNotMatch(context.prompt, /FULL CANONICAL/)
+    })
+    const key = JSON.stringify(['session-1', 'codex', 'provider-a', 'model-a'])
+    assert.deepEqual(state.resume(key).watermark, { messageCount: 6, digest: 'anchor-three' })
+    assert.equal(state.resume(key).turns, 2)
+    await state.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a parked lane rolls over when its canonical watermark cannot be proven', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-parked-mismatch-'))
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 10 })
+    await runCompleted(registry, parts(1, {
+      conversation: {
+        watermarkAfter: () => ({ messageCount: 2, digest: 'anchor-one' }),
+        resumeFrom: () => undefined,
+      },
+    }), 'vendor-1')
+    await runCompleted(registry, parts(3, {
+      fullPrompt: 'FULL AFTER COMPACTION',
+      conversation: {
+        watermarkAfter: () => ({ messageCount: 3, digest: 'replacement' }),
+        resumeFrom: () => undefined,
+      },
+    }), 'vendor-2', (context) => {
+      assert.equal(context.mode, 'fresh')
+      assert.equal(context.prompt, 'FULL AFTER COMPACTION')
+    })
+    await state.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Claude, Codex, and Kimi each resume their parked lane through one switch cycle', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-switch-cycle-'))
+  const human = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  const assistant = (text) => ({ role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text }] })
+  const identities = {
+    'claude-code': { provider: 'provider-claude', model: 'model-claude', vendorId: 'vendor-claude' },
+    codex: { provider: 'provider-codex', model: 'model-codex', vendorId: 'vendor-codex' },
+    'kimi-code': { provider: 'provider-kimi', model: 'model-kimi', vendorId: 'vendor-kimi' },
+  }
+  const transcript = []
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 10 })
+    const execute = async (harness, turn, userText, expectedMode, expectedHistory = []) => {
+      transcript.push(human(userText))
+      const identity = identities[harness]
+      const conversation = createConversationView(transcript, {
+        completedTurns: new Set(Array.from({ length: turn - 1 }, (_, index) => index + 1)),
+      })
+      await runCompleted(registry, parts(turn, {
+        harness,
+        provider: identity.provider,
+        model: identity.model,
+        promptSignature: `system-${harness}`,
+        fullPrompt: `FULL-${harness}-${turn}`,
+        incrementalPrompt: conversation.currentPrompt(),
+        conversation,
+      }), identity.vendorId, (context) => {
+        assert.equal(context.mode, expectedMode)
+        if (expectedMode === 'resume') {
+          assert.match(context.prompt, /^HARNESS HANDOFF/)
+          for (const text of expectedHistory) assert.match(context.prompt, new RegExp(text))
+        }
+      })
+      transcript.push(assistant('ok'))
+    }
+
+    await execute('claude-code', 1, 'claude first', 'fresh')
+    await execute('codex', 2, 'codex first', 'fresh')
+    await execute('kimi-code', 3, 'kimi first', 'fresh')
+    await execute('claude-code', 4, 'claude second', 'resume', ['codex first', 'kimi first'])
+    await execute('codex', 5, 'codex second', 'resume', ['kimi first', 'claude second'])
+    await execute('kimi-code', 6, 'kimi second', 'resume', ['claude second', 'codex second'])
+
+    for (const [harness, identity] of Object.entries(identities)) {
+      const key = JSON.stringify(['session-1', harness, identity.provider, identity.model])
+      assert.equal(state.resume(key).vendorId, identity.vendorId)
+      assert.equal(state.resume(key).turns, 2)
+    }
+    await state.close()
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -316,7 +440,47 @@ test('singleflight holds one native lane until the prior run is disposed', async
   }
 })
 
-test('a failed dirty-state write still quarantines the resumed lane in memory', async () => {
+test('a durable consume claim prevents handoff replay after a success commit failure and restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-consume-claim-'))
+  const file = join(directory, 'state.json')
+  let writes = 0
+  try {
+    const state = await createAllianceState({
+      file,
+      async writer(path, snapshot) {
+        writes += 1
+        // Fresh commit, durable consume claim, then the resumed final commit.
+        if (writes === 3) throw new Error('disk full after prompt consumption')
+        await writeFile(path, JSON.stringify(snapshot))
+      },
+    })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 10 })
+    const key = JSON.stringify(['session-1', 'codex', 'provider-a', 'model-a'])
+    await runCompleted(registry, parts(1), 'vendor-1')
+    await runCompleted(registry, parts(2), 'vendor-1', (context) => {
+      assert.equal(context.mode, 'resume')
+      assert.equal(state.resume(key).vendorId, null)
+    })
+    await state.close()
+
+    const restoredState = await createAllianceState({ file })
+    assert.equal(restoredState.resume(key).vendorId, null)
+    const restoredRegistry = createNativeSessionRegistry({ state: restoredState, version: 'test-version', now: () => 20 })
+    const retry = await restoredRegistry.start(parts(3), async (context) => {
+      assert.equal(context.mode, 'fresh')
+      assert.equal(context.prompt, 'FULL-3')
+      context.adopt('vendor-2')
+      return completedRun()
+    })
+    await retry.result
+    await retry.dispose()
+    await restoredState.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a failed durable consume claim forces fresh and quarantines the stale lane in memory', async () => {
   let failWrites = false
   const state = await createAllianceState({
     file: '/unused/native-session-state.json',
@@ -328,7 +492,8 @@ test('a failed dirty-state write still quarantines the resumed lane in memory', 
   await runCompleted(registry, parts(1), 'vendor-1')
   failWrites = true
   const failed = await registry.start(parts(2), async (context) => {
-    assert.equal(context.mode, 'resume')
+    assert.equal(context.mode, 'fresh')
+    assert.equal(context.prompt, 'FULL-2')
     return { id: 'failed', result: Promise.resolve({ output: [], stopReason: 'error' }), async dispose() {} }
   })
   await failed.result

@@ -19,7 +19,7 @@
 - **CLI 自动检测与托管安装**：优先使用 `PATH` 中的全局 CLI；缺失时在 Harness 菜单内显示「安装」，安装到 DSH 自有目录，不使用 sudo。
 - **并行委派**：preset 同时提供 `subagent_claude_code`、`subagent_codex` 与 `subagent_kimi_code`。
 - **缓存可观测**：外部 Harness 的 uncached/cache-read/cache-write/reasoning token 会回到 DSH 原生 token meter，不再显示为零；同一 DSH session 同时作为 provider prompt-cache affinity key。
-- **原生会话续接**：连续使用相同 DSH session、Harness、provider 与 model 时，Claude Code、Codex 和 Kimi Code 会恢复各自的原生 session/thread，仅发送本轮增量消息；不连续、失败、配置变化或达到 32 个成功回合时自动安全 rollover。
+- **原生会话停泊与续接**：每个 DSH session 下的 Claude Code、Codex 和 Kimi Code lane 会各自停泊原生 session/thread；连续使用时只发送本轮请求，跨 Harness 切回时只补交离开期间的已完成 canonical history。连续性无法证明、失败、配置变化或达到 32 个成功回合时自动安全 rollover。
 
 ## 环境要求
 
@@ -82,10 +82,11 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 - DSH 原生 token meter 用累计桶计算总用量与缓存命中率，用末次调用样本计算 context pressure；两种口径共用原生 UI，不新增第二套统计界面。
 - bridge 将 DSH session id 传给模型 route；支持 OpenAI Responses 的 DSH adapter 可据此派生稳定 `prompt_cache_key`。
 - Anthropic 的 per-block `cache_control` 无法进入 DSH provider-neutral message schema，因此由当前 DSH provider adapter 按其 `cacheRetention` 配置重新放置 system / last-tool / last-user cache breakpoint，而不是复制外部 CLI 的 wire 字段。
-- 第一次运行或安全 rollover 会发送完整 DSH canonical history；只有上一回合成功且 turn 连续、Harness/provider/model 相同、system 与 sandbox fingerprint 未变化时，才恢复原生 session/thread 并发送最新用户消息增量。恢复路径不会再次发送完整历史，避免 native history 与文本化历史重复。
-- 原生会话 lane 严格按 `DSH session × Harness × provider × model` 隔离。状态采用带 revision 的 CAS 更新，同一 lane 在完整运行与释放结束前保持 singleflight；过期失败不能删除或覆盖更新的 vendor id。
-- resume id 只在干净的 `completed` 回合后提交；error/abort、同 turn 重试、turn 缺口、fingerprint 变化、原生 id 失效或 32 个连续成功回合都会回到“新原生会话 + 完整 canonical history”。无效 resume 最多在确认 prompt 尚未执行时透明回退一次。
-- 状态文件 v2 最多保留 200 个原生 lane；Claude、Codex 与 Kimi 的持久化数据位于 DSH state 下的托管目录，不进入用户 CLI 的普通会话列表。vendor session 是可丢弃缓存，DSH Session 日志始终是唯一 canonical history。
+- 第一次运行或安全 rollover 会发送完整 DSH canonical history。每条 canonical message 会标注其 DSH turn 与当时的执行 Harness，避免另一个 Harness 把历史回答里的第一人称身份、代号或私有记忆当成自己的。连续使用同一 lane 时恢复原生 session/thread 并只发送当前请求；切换到别的 Harness 后再切回时恢复停泊的 vendor id，并发送带 identity-isolation 约束的 `HARNESS HANDOFF`：只包含该 lane 离开后的已完成消息与当前请求，绝不把完整历史再次注入已有 native history。
+- 原生会话 lane 严格按 `DSH session × Harness × provider × model` 隔离。每次干净完成后仅持久化稳定 conversation spine 的消息数与 SHA-256 摘要，不保存第二份 transcript；spine 包含 user/model/tool 与持久 notice/relay/recall，排除会被 surface projection 替换的 snapshot/catalog/instructions。切回时必须用当前 DSH canonical messages 证明旧 spine 前缀未被编辑、压缩或清除，且 Session 事件证明缺口内每个 turn 都干净完成。
+- 状态采用带 revision 的 CAS 更新，同一 lane 在完整运行与释放结束前保持 singleflight；过期失败不能删除或覆盖更新的 vendor id。恢复前先以 CAS 持久化 `vendorId: null` 的 consume claim，进程异常退出也不会重复发送同一 handoff；resume id 和新水位线只在干净的 `completed` 回合及进程释放后一起重新提交。claim 或最终提交失败都会在当前进程内隔离旧 lane。
+- fingerprint 变化、canonical 水位线不匹配、历史收缩、Session 事件缺失/未完成、同 turn 重试、原生 id 失效或 32 个该 lane 的成功回合都会回到“新原生会话 + 完整 canonical history”。动态 snapshot/catalog/instructions 只随 fresh/full 更新，避免其频繁变化破坏停泊恢复；最迟在 32 次 lane 使用后刷新。无效 resume 最多在确认 prompt 尚未执行时透明回退一次；error/abort 会丢弃正在运行的 vendor lane。
+- 状态文件 v3 最多保留 200 个原生 lane，并懒迁移 v2 记录：旧记录仍可做一次连续 resume，成功后补齐水位线。Claude、Codex 与 Kimi 的持久化数据位于 DSH state 下的托管目录，不进入用户 CLI 的普通会话列表。vendor session 是可丢弃缓存，DSH Session 日志始终是唯一 canonical history。
 
 双口径上下文修复需要 DSH 的 `TokenUsage` 与 token-meter 支持 `contextInputTokens` / `contextOutputTokens`。较旧的 DSH 构建会忽略新增字段：累计用量和缓存命中率仍正确，但上下文占用仍会按聚合输入计算。使用 v0.9.1 的上下文修复前，应先升级到包含该可选字段支持的 DSH 构建。
 
@@ -113,13 +114,13 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 ├── lib/
 │   ├── index.js                   # Host wiring、transport 与 teardown
 │   ├── runtime.js                 # Agent-loop router、全量/增量 prompt、实时过程与最终校准
-│   ├── native-session.js          # 原生 lane singleflight、CAS、rollover 与持久化编排
+│   ├── native-session.js          # 原生 lane 停泊、handoff、singleflight、CAS 与 rollover 编排
 │   ├── harness.js                 # Claude partial messages、session persistence/resume
 │   ├── codex-app-server.js        # Codex app-server、persistent thread/resume、interrupt
 │   ├── kimi-acp.js                # Kimi ACP、durable session/load、恢复与 finalization
 │   ├── bridge.js                  # Messages/Responses → DSH LLM loopback bridge
 │   ├── cli-manager.js             # 全局优先/托管兜底的 CLI 生命周期
-│   ├── state.js                   # Session 日志外的选择、badge 与原生 lane v2 状态
+│   ├── state.js                   # Session 日志外的选择、badge 与原生 lane v3 水位线状态
 │   └── client.js                  # Harness selector、安装按钮与徽标
 ├── test/                          # Node 回归测试
 ├── setup/install.mjs              # 跨平台、幂等的 Web Profile link 安装器

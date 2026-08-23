@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createAllianceRuntime } from '../lib/runtime.js'
+import { createAllianceRuntime, createConversationView } from '../lib/runtime.js'
 
 function fixture({ preset = 'harness-ally', status = 'idle', harness = 'dsh', result, stream, availabilityGate, dispatchGate, startError } = {}) {
   const session = {
@@ -88,6 +88,144 @@ function fallback(chunks = [{ type: 'finish', reason: { kind: 'stop' } }]) {
     get called() { return called },
   }
 }
+
+test('conversation watermarks derive exact consecutive and parked handoff prompts', () => {
+  const human = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  const assistant = (text, reasoning) => ({
+    role: 'assistant',
+    source: { kind: 'model' },
+    content: [
+      ...(reasoning ? [{ type: 'reasoning', text: reasoning }] : []),
+      { type: 'text', text },
+    ],
+  })
+  const first = createConversationView([human('first')])
+  const watermark = first.watermarkAfter('answer one')
+  const multiBlockWatermark = first.watermarkAfter([
+    { type: 'text', text: ' answer ' },
+    { type: 'text', text: 'one ' },
+  ])
+  assert.equal(createConversationView([human('first'), assistant('answer one'), human('second')])
+    .resumeFrom(multiBlockWatermark), 'USER\nsecond')
+
+  const consecutive = createConversationView([human('first'), assistant('answer one', 'private trace'), human('second')])
+  assert.equal(consecutive.resumeFrom(watermark), 'USER\nsecond')
+
+  const parked = createConversationView([
+    human('first'),
+    assistant('answer one', 'different private trace'),
+    { role: 'user', source: { kind: 'plugin', plugin: 'goal', form: 'notice', summary: 'checkpoint notice' }, content: [{ type: 'text', text: 'checkpoint notice' }] },
+    human('work handled by another Harness'),
+    assistant('other result'),
+    human('continue here'),
+  ], { completedTurns: new Set([2]) })
+  assert.equal(parked.resumeFrom(watermark), undefined)
+  assert.equal(parked.resumeFrom(watermark, { afterTurn: 1, beforeTurn: 3 }), [
+    'HARNESS HANDOFF',
+    '',
+    'While this Harness was parked, DSH recorded the following canonical messages. Treat them as intervening history and do not repeat completed work. The workspace is authoritative; inspect it when details are uncertain.',
+    '',
+    'IDENTITY ISOLATION',
+    '',
+    "You are resuming the selected Harness lane. In the history below, first-person identity claims belong to the labeled other Harness that produced them. Never adopt another Harness's identity, persona, code name, or private memory as your own; preserve this lane's prior identity.",
+    '',
+    'USER\ncheckpoint notice',
+    '',
+    'USER\nwork handled by another Harness',
+    '',
+    'ASSISTANT\nother result',
+    '',
+    'CURRENT REQUEST FOR RESUMED HARNESS: selected Harness',
+    '',
+    'USER\ncontinue here',
+  ].join('\n'))
+
+  const volatileContext = createConversationView([
+    human('first'),
+    { role: 'user', source: { kind: 'plugin', plugin: 'runtime', form: 'snapshot', sections: [] }, content: [{ type: 'text', text: 'old snapshot' }] },
+    assistant('answer one'),
+    human('second'),
+    { role: 'user', source: { kind: 'plugin', plugin: 'runtime' }, content: [{ type: 'text', text: 'new volatile context' }] },
+  ])
+  assert.equal(volatileContext.resumeFrom(watermark), 'USER\nsecond')
+  assert.deepEqual(volatileContext.messages.slice(-2), ['USER\nsecond', 'USER\nnew volatile context'])
+
+  const edited = createConversationView([human('first'), assistant('changed answer'), human('second')])
+  assert.equal(edited.resumeFrom(watermark), undefined)
+
+  const interruptedGap = createConversationView([
+    human('first'), assistant('answer one'), human('aborted elsewhere'), human('retry here'),
+  ])
+  assert.equal(interruptedGap.resumeFrom(watermark), undefined)
+
+  const partialAbortedGap = createConversationView([
+    human('first'), assistant('answer one'), human('aborted elsewhere'), assistant('partial output'), human('retry here'),
+  ], { completedTurns: new Set([1]) })
+  assert.equal(partialAbortedGap.resumeFrom(watermark, { afterTurn: 1, beforeTurn: 3 }), undefined)
+})
+
+test('conversation provenance isolates identities across parked Harness handoffs', () => {
+  const message = (id, role, text, kind) => ({ id, role, source: { kind }, content: [{ type: 'text', text }] })
+  const provenance = new Map([
+    ['c1-user', { turn: 1, harness: 'Claude Code' }],
+    ['c1-answer', { turn: 1, harness: 'Claude Code' }],
+    ['x1-user', { turn: 2, harness: 'Codex' }],
+    ['x1-answer', { turn: 2, harness: 'Codex' }],
+    ['k1-user', { turn: 3, harness: 'Kimi Code' }],
+    ['k1-answer', { turn: 3, harness: 'Kimi Code' }],
+    ['c2-user', { turn: 4, harness: 'Claude Code' }],
+    ['c2-answer', { turn: 4, harness: 'Claude Code' }],
+    ['x2-user', { turn: 5, harness: 'Codex' }],
+  ])
+  const prior = createConversationView([
+    message('c1-user', 'user', 'remember ALPHA', 'user'),
+    message('c1-answer', 'assistant', 'C1 OK', 'model'),
+    message('x1-user', 'user', 'remember BETA', 'user'),
+  ], { provenance })
+  const watermark = prior.watermarkAfter('X1 OK')
+  const returning = createConversationView([
+    message('c1-user', 'user', 'remember ALPHA', 'user'),
+    message('c1-answer', 'assistant', 'C1 OK', 'model'),
+    message('x1-user', 'user', 'remember BETA', 'user'),
+    message('x1-answer', 'assistant', 'X1 OK', 'model'),
+    message('k1-user', 'user', 'remember GAMMA', 'user'),
+    message('k1-answer', 'assistant', 'K1 OK', 'model'),
+    message('c2-user', 'user', 'state your code name', 'user'),
+    message('c2-answer', 'assistant', 'I am ALPHA', 'model'),
+    message('x2-user', 'user', 'state your code name', 'user'),
+  ], { provenance, completedTurns: new Set([1, 2, 3, 4]) })
+
+  assert.match(returning.messages[0], /^\[DSH TURN 1 · EXECUTION HARNESS: Claude Code\]\nUSER/)
+  const handoff = returning.resumeFrom(watermark, { afterTurn: 2, beforeTurn: 5 })
+  assert.match(handoff, /IDENTITY ISOLATION/)
+  assert.match(handoff, /first-person identity claims belong to the labeled other Harness/)
+  assert.match(handoff, /\[DSH TURN 3 · EXECUTION HARNESS: Kimi Code\]/)
+  assert.match(handoff, /\[DSH TURN 4 · EXECUTION HARNESS: Claude Code\][\s\S]*ASSISTANT\nI am ALPHA/)
+  assert.match(handoff, /CURRENT REQUEST FOR RESUMED HARNESS: Codex/)
+})
+
+test('conversation rendering correlates tool results and degrades historical images safely', () => {
+  const view = createConversationView([
+    {
+      role: 'assistant', source: { kind: 'model' },
+      content: [{ type: 'tool-call', id: 'call-1', name: 'Read', arguments: '{"path":"a.png"}' }],
+    },
+    {
+      role: 'user', source: { kind: 'tool', toolCallId: 'call-1' },
+      content: [{
+        type: 'tool-result', toolCallId: 'call-1',
+        content: [{ type: 'text', text: 'opened' }, { type: 'image', mediaType: 'image/png', data: 'ignored' }],
+      }],
+    },
+    { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] },
+  ])
+  assert.deepEqual(view.messages, [
+    'ASSISTANT\n[tool call: Read]\n{"path":"a.png"}',
+    'USER\n[tool result: Read]\nopened\n[image omitted from external Harness history]',
+    'USER\ncontinue',
+  ])
+  assert.equal(view.currentPrompt(), 'USER\ncontinue')
+})
 
 test('snapshot exposes authoritative Harness selection and availability', async () => {
   const { runtime, session } = fixture({ harness: 'codex' })
@@ -180,7 +318,32 @@ test('external prompt identifies the selected Harness separately from its DSH ho
     const prompt = starts[0].request.prompt[0].text
     assert.match(prompt, new RegExp(`active execution Harness for this turn is ${label}`, 'i'))
     assert.match(prompt, /DeepSeek Harness \(DSH\) remains the host/i)
+    assert.match(prompt, /First-person identity or memory claims belong only to that labeled Harness/i)
   }
+})
+
+test('runtime labels canonical messages with the Harness active for each DSH turn', async () => {
+  const { runtime, session, starts } = fixture({ harness: 'claude-code' })
+  const c1 = { id: 'c1-user', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'remember ALPHA' }] }
+  const c1Answer = { id: 'c1-answer', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: 'C1 OK' }] }
+  const x1 = { id: 'x1-user', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'remember BETA' }] }
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', c1)
+  await collect(runtime.route({ sessionId: session.id, agentLoop: true, messages: [c1] }, fallback().next))
+  session.append('assistant/message', { turn: 1, step: 1, message: c1Answer })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+  await runtime.select({ sessionId: session.id, harness: 'codex' })
+  session.append('turn/start', { turn: 2 })
+  session.append('step/start', { turn: 2, step: 1 })
+  session.append('user/message', x1)
+  await collect(runtime.route({ sessionId: session.id, agentLoop: true, messages: [c1, c1Answer, x1] }, fallback().next))
+
+  const prompt = starts[1].request.prompt[0].text
+  assert.match(prompt, /\[DSH TURN 1 · EXECUTION HARNESS: Claude Code\]\nUSER\nremember ALPHA/)
+  assert.match(prompt, /\[DSH TURN 1 · EXECUTION HARNESS: Claude Code\]\nASSISTANT\nC1 OK/)
+  assert.match(prompt, /\[DSH TURN 2 · EXECUTION HARNESS: Codex\]\nUSER\nremember BETA$/)
 })
 
 test('external prompts keep the Harness instruction, system, and prior history as a stable prefix', async () => {
@@ -219,6 +382,8 @@ test('external prompts keep the Harness instruction, system, and prior history a
   assert.equal(secondRequest.promptSignature, firstRequest.promptSignature)
   assert.equal(firstRequest.turn, 1)
   assert.equal(secondRequest.turn, 2)
+  const watermark = firstRequest.conversation.watermarkAfter('answer')
+  assert.equal(secondRequest.conversation.resumeFrom(watermark), 'USER\nsecond')
 })
 
 test('external Harness emits one standard usage sample even when the provider omits metrics', async () => {

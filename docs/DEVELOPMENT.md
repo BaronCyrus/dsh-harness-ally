@@ -35,12 +35,14 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 
 1. DSH Session 日志是唯一 canonical history；Claude session、Codex thread 与 Kimi session 只是可丢弃的执行缓存。
 2. 原生 lane key 必须是 `DSH session × Harness × provider × model`，四项任意变化都不得读取另一 lane 的 vendor id。
-3. fresh/rollover 发送完整 canonical prompt；只有上一成功回合与当前 turn 连续且 version/cwd/policy/system fingerprint 相同时，resume 才能发送最新用户消息增量。禁止向已有 native history 再发送完整历史。
-4. vendor id 只在 adapter 返回 `completed` 后通过 revision CAS 提交。error、abort、同 turn 重试或恢复后失败会隔离该 lane；即使 dirty-state 写盘失败，本进程也必须保持 quarantine。
-5. 一个 lane 从启动到 `dispose()` 完成必须 singleflight；后续运行不得与尚未释放的 CLI 进程共享同一原生 session。
-6. 原生 id 无效时只允许在 prompt 尚未执行的握手阶段回退一次：Codex `thread/resume → thread/start`、Kimi `session/load → session/new`、Claude 精确识别无会话错误后重新 spawn。运行中失败禁止自动重放，避免重复副作用。
-7. turn 缺口、fingerprint 变化或 32 个连续成功回合触发安全 rollover；状态最多保留 200 个 lane，淘汰只影响优化，不影响正确性。
-8. Kimi `session/load` 的历史 replay update 不得进入当前 DSH stream；成功回合先关闭 ACP stdin 并有界等待进程自然退出以刷盘，超时则丢弃该 vendor id 后终止；Skill watchdog 的 fresh recovery 必须携带完整 canonical history，其新 session 是本回合释放后提交的最终 vendor id。
+3. fresh/rollover 发送完整 canonical prompt；规范化消息必须用 Session event 的 message id→turn 与 dispatch 的 turn→Harness 标注来源。历史 `ASSISTANT` 的第一人称身份/代号只属于其标注 Harness，不能污染当前 lane。同一 lane 连续 resume 只发送当前请求；turn 有缺口时允许恢复停泊的 vendor id，但只能发送由 canonical 水位线证明且带 identity isolation 的 `HARNESS HANDOFF`（离开后的已完成消息 + 当前请求）。禁止向已有 native history 再发送完整历史。
+4. 水位线只持久化稳定 conversation spine 的规范化消息数与 SHA-256 摘要，不持久化 transcript；验证和 prompt 必须使用同一个 renderer。spine 包含 user/model/tool、plugin notice/relay/recall 与无 source 的普通消息，排除 plugin snapshot/catalog/instructions、无 form 与未知 source；这些 volatile context 仍进入 full prompt，但不进入 resume delta。旧 spine 前缀编辑、压缩、清空、收缩、Session `turn/end` 缺失/非 completed、消息形态未完成或没有严格进展时，必须 fail closed 到 fresh/full。
+5. resume dispatch 前必须先用 revision CAS 把持久 vendor id 清为 null，形成 durable consume claim；claim 失败则禁止使用该 vendor id。新的 vendor id 与水位线只在 adapter 返回 `completed` 且 `dispose()` 干净结束后一起提交。这样最终提交失败或进程重启也不会重复发送同一 handoff；error、abort、同 turn 重试或恢复后失败继续隔离该 lane。
+6. 一个 lane 从启动到 `dispose()` 完成必须 singleflight；后续运行不得与尚未释放的 CLI 进程共享同一原生 session。
+7. 原生 id 无效时只允许在 prompt 尚未执行的握手阶段回退一次：Codex `thread/resume → thread/start`、Kimi `session/load → session/new`、Claude 精确识别无会话错误后重新 spawn。运行中失败禁止自动重放，避免重复副作用。
+8. fingerprint 变化、无法证明的 turn 缺口或一个 lane 达到 32 个成功回合会触发安全 rollover；状态 v3 最多保留 200 个 lane，v2 lane 仅保留连续恢复兼容并在下一次成功后懒迁移，淘汰只影响优化，不影响正确性。
+9. 当前用户顶层图片继续硬拒绝；历史图片（包括 tool-result 嵌套图片）降级为占位符，tool result 名称必须通过 `toolCallId` 关联，reasoning 不进入 canonical 水位线，避免易变过程文本破坏可证明前缀。无文本的成功结果不能形成新水位线，后续跨 Harness 切回必须 fresh/full。
+10. Kimi `session/load` 的历史 replay update 不得进入当前 DSH stream；成功回合先关闭 ACP stdin并有界等待进程自然退出以刷盘，超时则丢弃该 vendor id 后终止；Skill watchdog 的 fresh recovery 必须携带完整 canonical history，其新 session 是本回合释放后提交的最终 vendor id。
 
 ## Tests
 

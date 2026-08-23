@@ -7,6 +7,7 @@ import test from 'node:test'
 
 import { createHarnessGateway } from '../lib/harness.js'
 import { createNativeSessionRegistry } from '../lib/native-session.js'
+import { createConversationView } from '../lib/runtime.js'
 import { createAllianceState } from '../lib/state.js'
 
 function fixture(events = {}) {
@@ -288,6 +289,65 @@ test('gateway resumes only a consecutive matching DSH session lane', async () =>
     assert.equal(f.spawns[0].handle.stdinText, 'FULL FIRST')
     assert.equal(f.spawns[1].handle.stdinText, 'USER\nsecond')
     assert.equal(f.spawns[1].spec.env.CLAUDE_CONFIG_DIR, join(directory, 'native', 'claude'))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('gateway restores a parked Claude lane with only cross-Harness handoff context', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-gateway-parked-'))
+  const human = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  const assistant = (text) => ({ role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text }] })
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const nativeSessions = createNativeSessionRegistry({ state, version: 'test-version' })
+    const f = fixture({
+      nativeSessions,
+      stateDir: directory,
+      stdout: [
+        JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session-parked' }),
+        JSON.stringify({ type: 'result', subtype: 'success', result: 'FIRST' }),
+      ],
+    })
+    const firstMessages = [human('first')]
+    const first = await f.gateway.start('claude-code', {
+      ...request('FULL FIRST'),
+      incrementalPrompt: [{ type: 'text', text: 'USER\nfirst' }],
+      conversation: createConversationView(firstMessages),
+      promptSignature: 'system-a',
+      turn: 1,
+      provider: 'provider-a',
+      model: 'model-a',
+    })
+    await first.result
+    await first.dispose()
+
+    const currentMessages = [
+      human('first'), assistant('FIRST'),
+      human('handled elsewhere'), assistant('OTHER RESULT'),
+      human('return to Claude'),
+    ]
+    const third = await f.gateway.start('claude-code', {
+      ...request('FULL THROUGH TURN 3'),
+      incrementalPrompt: [{ type: 'text', text: 'USER\nreturn to Claude' }],
+      conversation: createConversationView(currentMessages, { completedTurns: new Set([1, 2]) }),
+      promptSignature: 'system-a',
+      turn: 3,
+      provider: 'provider-a',
+      model: 'model-a',
+    })
+    await third.result
+    await third.dispose()
+    await state.close()
+
+    assert.deepEqual(f.spawns[1].spec.argv.slice(f.spawns[1].spec.argv.indexOf('--resume'), f.spawns[1].spec.argv.indexOf('--resume') + 2), [
+      '--resume', 'claude-session-parked',
+    ])
+    assert.match(f.spawns[1].handle.stdinText, /^HARNESS HANDOFF/)
+    assert.match(f.spawns[1].handle.stdinText, /USER\nhandled elsewhere/)
+    assert.match(f.spawns[1].handle.stdinText, /ASSISTANT\nOTHER RESULT/)
+    assert.match(f.spawns[1].handle.stdinText, /CURRENT REQUEST FOR RESUMED HARNESS: selected Harness\n\nUSER\nreturn to Claude$/)
+    assert.doesNotMatch(f.spawns[1].handle.stdinText, /FULL THROUGH TURN 3/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -18,7 +18,7 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
     await first.close()
 
     const raw = JSON.parse(await readFile(file, 'utf8'))
-    assert.equal(raw.version, 2)
+    assert.equal(raw.version, 3)
     assert.equal(raw.sessions['session-1'].harness, 'kimi-code')
     assert.deepEqual(raw.resumes, {})
 
@@ -28,6 +28,45 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
       turn: 2, step: 1, runId: 'run-1', harness: 'kimi-code', provider: 'configured', model: 'model-a',
     }])
     await restored.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('state v2 lazily migrates resume records to v3 canonical watermarks', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-state-v3-'))
+  const file = join(directory, 'state.json')
+  try {
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      sessions: { 'session-1': { harness: 'claude-code', dispatches: [] } },
+      resumes: {
+        lane: {
+          revision: 1,
+          vendorId: 'vendor-old',
+          fingerprint: 'fingerprint',
+          throughTurn: 2,
+          turns: 2,
+          updatedAt: 10,
+        },
+      },
+    }))
+    const state = await createAllianceState({ file })
+    assert.equal(state.resume('lane').watermark, undefined)
+    const upgraded = await state.compareAndSetResume('lane', 1, {
+      vendorId: 'vendor-old',
+      fingerprint: 'fingerprint',
+      throughTurn: 3,
+      turns: 3,
+      updatedAt: 20,
+      watermark: { messageCount: 6, digest: 'abc123' },
+    })
+    assert.deepEqual(upgraded.watermark, { messageCount: 6, digest: 'abc123' })
+    await state.close()
+
+    const raw = JSON.parse(await readFile(file, 'utf8'))
+    assert.equal(raw.version, 3)
+    assert.deepEqual(raw.resumes.lane.watermark, { messageCount: 6, digest: 'abc123' })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
