@@ -31,10 +31,12 @@ function fixture({
   resumeAdvertised = true,
   resumeFails = false,
   loadReplay = false,
+  ignoreGracefulExit = false,
   skillLateMessageOnCancel = false,
   skillLateCompleteOnCancel = false,
   skillTitle = 'Skill',
   skillContinuationTimeoutMs,
+  sessionFlushTimeoutMs,
 } = {}) {
   const messages = []
   const spawns = []
@@ -62,7 +64,7 @@ function fixture({
       let terminated = 0
       const done = new Promise((resolve) => { resolveDone = resolve })
       stdin.on('finish', () => queueMicrotask(() => {
-        if (terminated > 0) return
+        if (ignoreGracefulExit || terminated > 0) return
         stdout.end()
         stderr.end()
         resolveDone({ exitCode: 0, signal: null })
@@ -89,10 +91,21 @@ function fixture({
           } else if (message.method === 'session/load') {
             if (resumeFails) send({ id: message.id, error: { code: -32602, message: 'session not found' } })
             else {
-              if (loadReplay) send({
-                method: 'session/update',
-                params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OLD REPLAY␞' } } },
-              })
+              if (loadReplay) {
+                send({
+                  method: 'session/update',
+                  params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OLD REPLAY␞' } } },
+                })
+                send({
+                  id: 103,
+                  method: 'session/request_permission',
+                  params: {
+                    sessionId: message.params.sessionId,
+                    options: [{ optionId: 'approve_once', kind: 'allow_once' }, { optionId: 'approve_always', kind: 'allow_always' }],
+                    toolCall: { toolCallId: 'replayed-tool', title: 'Bash' },
+                  },
+                })
+              }
               send({ id: message.id, result: {
               sessionId: message.params.sessionId,
               configOptions: modeAdvertised ? [{
@@ -225,7 +238,13 @@ function fixture({
           stderr.end()
           resolveDone({ exitCode: 0, signal: null })
         },
-        async waitForExit() { await done; return true },
+        async waitForExit(signal) {
+          if (!signal) { await done; return true }
+          return Promise.race([
+            done.then(() => true),
+            new Promise((resolve) => signal.addEventListener('abort', () => resolve(false), { once: true })),
+          ])
+        },
         get terminated() { return terminated },
         send,
         complete() {
@@ -245,6 +264,7 @@ function fixture({
   const deps = {
     subprocess,
     skillContinuationTimeoutMs,
+    sessionFlushTimeoutMs,
     sandbox: { confine(argv) { return { argv, enforcement: 'full' } } },
     policyFor: () => ({ mode: 'danger-full-access' }),
     authorize() {},
@@ -356,6 +376,16 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.equal(f.homeRemovals, 1)
 })
 
+test('Kimi bounds graceful session flushing before terminating a stuck ACP process', async () => {
+  const f = fixture({ ignoreGracefulExit: true, sessionFlushTimeoutMs: 1 })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+  f.spawns[0].handle.complete()
+  assert.equal((await run.result).stopReason, 'completed')
+  await run.dispose()
+  assert.equal(f.spawns[0].handle.terminated, 1)
+})
+
 test('Kimi resumes a durable ACP session with only the incremental prompt', async () => {
   const adopted = []
   const nativeSession = {
@@ -378,8 +408,11 @@ test('Kimi resumes a durable ACP session with only the incremental prompt', asyn
     'initialize', 'session/load', 'session/set_config_option', 'session/prompt',
   ])
   assert.deepEqual(f.messages[1].params, { sessionId: 'session-kimi-old', cwd: '/workspace', mcpServers: [] })
-  assert.match(f.messages[3].params.prompt[0].text, /^USER\ncontinue\n\nKIMI CODE REPOSITORY SKILL POLICY/)
+  assert.match(f.messages.find((message) => message.method === 'session/prompt').params.prompt[0].text, /^USER\ncontinue\n\nKIMI CODE REPOSITORY SKILL POLICY/)
   assert.deepEqual(adopted, ['session-kimi-old'])
+  assert.deepEqual(f.messages.find((message) => message.id === 103 && !message.method)?.result, {
+    outcome: { outcome: 'cancelled' },
+  })
   assert.equal(f.spawns[0].spec.env.KIMI_CODE_HOME, '/managed-state/native/kimi')
   assert.equal(f.homeRemovals, 0)
 })
@@ -542,6 +575,35 @@ test('Kimi cancels one stalled post-Skill request and adopts the fresh ACP recov
   assert.deepEqual(adopted, ['session-kimi', 'session-kimi-recovery'])
   assert.equal(f.homeRemovals, 0)
   assert.equal(f.spawns[0].handle.terminated, 0)
+})
+
+test('Kimi rolls a resumed Skill recovery onto full canonical history', async () => {
+  const adopted = []
+  let fallbacks = 0
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'session-kimi-old',
+    prompt: 'USER\ncontinue',
+    adopt(id) { adopted.push(id) },
+    async fallback() {
+      fallbacks += 1
+      this.mode = 'fresh'
+      this.vendorId = undefined
+      this.prompt = 'FULL CANONICAL HISTORY'
+    },
+  }
+  const f = fixture({ skillStall: true, skillContinuationTimeoutMs: 10, nativeSession })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+  const result = await run.result
+  await run.dispose()
+
+  const prompts = f.messages.filter((message) => message.method === 'session/prompt')
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(fallbacks, 1)
+  assert.match(prompts[0].params.prompt[0].text, /^USER\ncontinue/)
+  assert.match(prompts[1].params.prompt[0].text, /^FULL CANONICAL HISTORY/)
+  assert.deepEqual(adopted, ['session-kimi-old', 'session-kimi'])
 })
 
 test('Kimi disarms the Skill watchdog after fresh recovery completes a native tool', async () => {

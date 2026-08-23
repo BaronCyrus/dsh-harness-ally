@@ -185,7 +185,13 @@ test('Claude retries one invalid resume as a fresh full-history session', async 
   }
   const f = fixture({ spawnEvents: [
     {
-      stderr: ['No conversation found with session ID: claude-session-missing'],
+      stdout: [JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        errors: ['No conversation found with session ID: claude-session-missing'],
+      })],
+      stderr: ['x'.repeat(70 * 1024)],
       outcome: { exitCode: 1, signal: null },
     },
     { stdout: [
@@ -205,6 +211,38 @@ test('Claude retries one invalid resume as a fresh full-history session', async 
   assert.equal(f.spawns[1].handle.stdinText, 'FULL CANONICAL HISTORY')
   assert.equal(fallbacks, 1)
   assert.deepEqual(adopted, ['claude-session-new'])
+})
+
+test('Claude never replays an invalid resume after any visible output', async () => {
+  let fallbacks = 0
+  const nativeSession = {
+    mode: 'resume',
+    vendorId: 'claude-session-old',
+    prompt: 'USER\ncontinue',
+    adopt() {},
+    async fallback() { fallbacks += 1 },
+  }
+  const f = fixture({
+    stdout: [
+      JSON.stringify({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } },
+      }),
+      JSON.stringify({
+        type: 'result', subtype: 'error_during_execution', is_error: true,
+        errors: ['No conversation found with session ID: claude-session-old'],
+      }),
+    ],
+    outcome: { exitCode: 1, signal: null },
+  })
+  const run = await f.gateway.start('claude-code', { ...request('task'), nativeSession })
+  const result = await run.result
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'error')
+  assert.equal(result.output[0].text, 'partial')
+  assert.equal(f.spawns.length, 1)
+  assert.equal(fallbacks, 0)
 })
 
 test('gateway resumes only a consecutive matching DSH session lane', async () => {

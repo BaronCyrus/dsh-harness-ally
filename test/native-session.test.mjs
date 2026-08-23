@@ -84,6 +84,26 @@ test('consecutive successful turns resume one isolated native session with only 
   }
 })
 
+test('a completed vendor id is committed only after the native process is disposed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-clean-exit-'))
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 10 })
+    const key = JSON.stringify(['session-1', 'codex', 'provider-a', 'model-a'])
+    const run = await registry.start(parts(1), async (context) => {
+      context.adopt('vendor-1')
+      return completedRun()
+    })
+    assert.equal((await run.result).stopReason, 'completed')
+    assert.equal(state.resume(key), undefined)
+    await run.dispose()
+    assert.equal(state.resume(key).vendorId, 'vendor-1')
+    await state.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('invalid native resume falls back to the full canonical prompt and adopts the replacement session', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-fallback-'))
   const file = join(directory, 'state.json')
@@ -201,6 +221,29 @@ test('a failed resumed turn poisons that vendor session and forces a fresh next 
       assert.equal(context.mode, 'fresh')
       assert.equal(context.prompt, 'FULL-3')
     })
+    await state.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a resumed starter failure quarantines the lane before releasing singleflight', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-native-start-failure-'))
+  try {
+    const state = await createAllianceState({ file: join(directory, 'state.json') })
+    const registry = createNativeSessionRegistry({ state, version: 'test-version', now: () => 10 })
+    await runCompleted(registry, parts(1), 'vendor-1')
+    await assert.rejects(registry.start(parts(2), async (context) => {
+      assert.equal(context.mode, 'resume')
+      throw new Error('turn/start failed')
+    }), /turn\/start failed/)
+    const retry = await registry.start(parts(2), async (context) => {
+      assert.equal(context.mode, 'fresh')
+      assert.equal(context.prompt, 'FULL-2')
+      return completedRun()
+    })
+    await retry.result
+    await retry.dispose()
     await state.close()
   } finally {
     await rm(directory, { recursive: true, force: true })
