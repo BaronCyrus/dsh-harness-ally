@@ -11,20 +11,20 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
   const file = join(directory, 'state.json')
   try {
     const first = await createAllianceState({ file })
-    await first.setHarness('session-1', 'codex')
+    await first.setHarness('session-1', 'kimi-code')
     await first.recordDispatch('session-1', {
-      turn: 2, step: 1, runId: 'run-1', harness: 'codex', provider: 'configured', model: 'model-a',
+      turn: 2, step: 1, runId: 'run-1', harness: 'kimi-code', provider: 'configured', model: 'model-a',
     })
     await first.close()
 
     const raw = JSON.parse(await readFile(file, 'utf8'))
     assert.equal(raw.version, 1)
-    assert.equal(raw.sessions['session-1'].harness, 'codex')
+    assert.equal(raw.sessions['session-1'].harness, 'kimi-code')
 
     const restored = await createAllianceState({ file })
-    assert.equal(restored.harness('session-1'), 'codex')
+    assert.equal(restored.harness('session-1'), 'kimi-code')
     assert.deepEqual(restored.dispatches('session-1'), [{
-      turn: 2, step: 1, runId: 'run-1', harness: 'codex', provider: 'configured', model: 'model-a',
+      turn: 2, step: 1, runId: 'run-1', harness: 'kimi-code', provider: 'configured', model: 'model-a',
     }])
     await restored.close()
   } finally {

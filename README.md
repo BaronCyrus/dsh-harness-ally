@@ -1,27 +1,27 @@
 # Harness联盟模式（DSH Agent Preset）
 
-让 DeepSeek Harness、Claude Code 和 Codex 共享同一个 DSH 会话生命周期，并与 DSH 原生模型选择器自由组合。
+让 DeepSeek Harness、Claude Code、Codex 和 Kimi Code 共享同一个 DSH 会话生命周期，并与 DSH 原生模型选择器自由组合。
 
 - **模型**仍由 DSH 原生模型选择器决定，自动使用当前已配置的全部 provider/model。
-- **Harness**由独立的「选择Harness」控件决定，每个回合可切换 DeepSeek Harness、Claude Code 或 Codex。
+- **Harness**由独立的「选择Harness」控件决定，每个回合可切换 DeepSeek Harness、Claude Code、Codex 或 Kimi Code。
 - DSH 始终拥有 history、turn、step、checkpoint、权限、取消和最终结果；外部 CLI 只负责执行当前 Agent 模型步骤。
 
 ## 功能
 
 - **不替换原生 composer/model selector**：模型目录与现有 DSH 配置保持单一真源。
 - **严格模式隔离**：Harness 选择器只在「Harness联盟模式」出现，Standard 模式完全不显示。
-- **真实外部执行**：选择 Claude Code/Codex 后，由对应 CLI 实际执行；提示会明确区分外部执行 Harness 与 DSH 宿主。
-- **完整实时输出**：Claude Code 使用 partial messages，Codex 使用 app-server `item/agentMessage/delta`，正文不再等待进程结束后一次性出现。
-- **可见执行过程**：外部回合立即显示 `Claude Code/Codex · 正在执行`；thinking、reasoning summary、`Bash`、文件修改、WebSearch、MCP 等活动实时显示在只读 `Think` 过程区。
+- **真实外部执行**：选择 Claude Code、Codex 或 Kimi Code 后，由对应 CLI 实际执行；提示会明确区分外部执行 Harness 与 DSH 宿主。
+- **完整实时输出**：Claude Code 使用 partial messages，Codex 使用 app-server，Kimi Code 使用 ACP `session/update`；正文不再等待进程结束后一次性出现。
+- **可见执行过程**：外部回合立即显示对应的 `Harness · 正在执行`；thinking、reasoning summary、`Bash`、文件修改、WebSearch、MCP 等活动实时显示在只读 `Think` 过程区。
 - **不会重复执行工具**：外部活动绝不伪装成 DSH tool call，因此 Standard Agent 不会把同一命令再执行一次。
 - **CLI 自动检测与托管安装**：优先使用 `PATH` 中的全局 CLI；缺失时在 Harness 菜单内显示「安装」，安装到 DSH 自有目录，不使用 sudo。
-- **并行委派**：preset 同时提供 `subagent_claude_code` 与 `subagent_codex`。
+- **并行委派**：preset 同时提供 `subagent_claude_code`、`subagent_codex` 与 `subagent_kimi_code`。
 
 ## 环境要求
 
 - DSH（DeepSeek Harness）Web 部署
 - Node.js 与 pnpm（DSH Web Profile 已使用 pnpm）
-- Claude Code / Codex CLI 二者均为可选：可以预先全局安装，也可以在「选择Harness」菜单中按需安装
+- Claude Code / Codex / Kimi Code CLI 均为可选：可以预先全局安装，也可以在「选择Harness」菜单中按需安装
 - macOS、Linux、Windows
 
 ## 安装
@@ -43,19 +43,19 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 ## 使用
 
 1. 继续使用 DSH 原生模型选择器选择 provider/model。
-2. 打开「选择Harness」，选择 DeepSeek Harness、Claude Code 或 Codex。
+2. 打开「选择Harness」，选择 DeepSeek Harness、Claude Code、Codex 或 Kimi Code。
 3. 正常发送消息。回合进行中 Harness 会锁定，停止仍由原生 composer 控制。
-4. 外部回合会先出现 `Think · Claude Code/Codex · 正在执行`；后续 thinking 和工具活动实时更新。
+4. 外部回合会先出现 `Think · Harness · 正在执行`；后续 thinking 和工具活动实时更新。
 5. 最终消息下方显示 `Harness · model` 徽标。
 
-缺失的 Claude Code/Codex 不可直接选择，只会显示「安装」按钮；安装完成后即可选择。CLI 解析顺序是“全局 `PATH` 优先，DSH 托管目录兜底”。
+缺失的 Claude Code、Codex 或 Kimi Code 不可直接选择，只会显示「安装」按钮；安装完成后即可选择。CLI 解析顺序是“全局 `PATH` 优先，DSH 托管目录兜底”。
 
 ## 架构
 
 | 平面 | 职责 |
 | --- | --- |
-| Host bundle | Harness selection、CLI 检测/托管安装、LLM waterfall router、本地模型协议 bridge、Claude partial/Codex app-server adapters、DSH sandbox、provider registry |
-| Agent preset | 联盟提示、标准编码工具、`subagent_claude_code` / `subagent_codex`；不发布跨会话 Service |
+| Host bundle | Harness selection、CLI 检测/托管安装、LLM waterfall router、本地模型协议 bridge、Claude partial/Codex app-server/Kimi ACP adapters、DSH sandbox、provider registry |
+| Agent preset | 联盟提示、标准编码工具、三个外部 Harness 的 one-shot subagent；不发布跨会话 Service |
 | Client bundle | Harness chip、菜单内安装、回合锁定与 additive `Harness · model` 徽标；不替换 composer/model selector |
 
 ### 模型桥
@@ -64,6 +64,7 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 
 - Claude Code 使用 Anthropic Messages；
 - Codex 使用 OpenAI Responses；
+- Kimi Code 通过 `KIMI_MODEL_*` 临时进程变量连接同一条 Anthropic Messages route，不修改用户的 `config.toml`；
 - bridge 把请求转换成 DSH `llm.stream`，保留当前模型选择器给出的精确 `provider + model` 及 reasoning/sampling 参数；
 - 运行结束立即撤销 route，Host 停止时关闭 loopback server。
 
@@ -71,11 +72,12 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 
 ### 实时过程与安全边界
 
-- Claude `thinking_delta` 和 Codex `item/reasoning/summaryTextDelta` 映射为标准 DSH reasoning。
-- 外部工具活动映射为 reasoning 中的只读状态行，不产生 `tool-call-delta`。
-- Agent signal 会终止整个外部进程树；Codex 会先尝试 `turn/interrupt`。
+- Claude `thinking_delta`、Codex reasoning summary 和 Kimi ACP `agent_thought_chunk` 映射为标准 DSH reasoning。
+- Kimi ACP `tool_call*` 与其他外部工具活动都映射为 reasoning 中的只读状态行，不产生 `tool-call-delta`。
+- Agent signal 会终止整个外部进程树；Codex 先尝试 `turn/interrupt`，Kimi Code 先发送 `session/cancel`。
 - 非 `danger-full-access` 模式由 DSH 外层 `sandbox.confine()` 包裹。
-- prompt 通过 stdin/app-server RPC 传输，不出现在 argv。
+- prompt 通过 stdin、app-server RPC 或 ACP JSON-RPC 传输，不出现在 argv。
+- Kimi ACP 不声明文件 reverse-RPC 能力，文件与命令仍由受 DSH 外层 sandbox 包裹的 Kimi 子进程本地执行；前台 bridge 运行使用临时 `KIMI_CODE_HOME` 并在结束后删除。
 - bridge 仅监听 `127.0.0.1`，每个 route 使用随机 bearer token。
 - 错误诊断不会回传 CLI 原始 stderr、route token 或环境变量。
 - 当前前台外部 Harness 只接受文本上下文；包含图片时会明确提示切回 DeepSeek Harness，不会静默丢图。
@@ -91,6 +93,7 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 │   ├── runtime.js                 # Agent-loop router、实时 reasoning/activity 与最终校准
 │   ├── harness.js                 # Claude partial-message adapter
 │   ├── codex-app-server.js        # Codex app-server、delta、ephemeral thread、interrupt
+│   ├── kimi-acp.js                # Kimi ACP、临时模型注入、session/update、cancel
 │   ├── bridge.js                  # Messages/Responses → DSH LLM loopback bridge
 │   ├── cli-manager.js             # 全局优先/托管兜底的 CLI 生命周期
 │   ├── state.js                   # Session 日志外的选择与 badge 状态
@@ -109,6 +112,7 @@ npm test
 node --check lib/runtime.js
 node --check lib/harness.js
 node --check lib/codex-app-server.js
+node --check lib/kimi-acp.js
 ```
 
 Host/preset/client 的生产部署变更都需要重启现有 `dsh web`。只有同时在 DSH checkout 运行 `pnpm run dev:web` 时，client-plugin HMR 才会自动重建。

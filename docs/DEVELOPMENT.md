@@ -4,10 +4,10 @@
 
 Harness联盟模式分为两个平面：
 
-- **Host bundle (`lib/`)**：跨会话共享 Harness 选择、CLI 检测/托管安装、Claude/Codex 进程、DSH 模型协议桥、LLM waterfall router、取消与状态持久化。
-- **Agent preset (`agent.cordis.yml`)**：为一个联盟会话提供标准编码工具、联盟提示和 `subagent_claude_code` / `subagent_codex`。
+- **Host bundle (`lib/`)**：跨会话共享 Harness 选择、CLI 检测/托管安装、Claude/Codex/Kimi Code 进程、DSH 模型协议桥、LLM waterfall router、取消与状态持久化。
+- **Agent preset (`agent.cordis.yml`)**：为一个联盟会话提供标准编码工具、联盟提示和三个外部 Harness 的 one-shot subagent。
 
-DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude Code/Codex 只充当外部执行 Harness 和模型适配器。
+DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude Code、Codex、Kimi Code 只充当外部执行 Harness 和模型适配器。
 
 ## Safety invariants
 
@@ -16,9 +16,11 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 3. 不复制或替换 DSH 原生模型选择器。
 4. 外部工具活动只映射为 reasoning 中的只读状态，禁止产生 DSH `tool-call-delta`，否则同一工具会被重复执行。
 5. 非 `danger-full-access` 模式由 DSH 外层 sandbox 包裹整个 CLI 进程树。
-6. Prompt 通过 stdin / app-server RPC 传输，不进入 argv。
-7. bridge token、CLI stderr、环境变量和本机凭据不得进入用户诊断或仓库。
-8. 所有进程、route、signal 监听器和队列必须可取消且幂等释放。
+6. Prompt 通过 stdin / app-server RPC / ACP JSON-RPC 传输，不进入 argv。
+7. Kimi ACP 客户端必须声明 `fs.readTextFile=false` / `fs.writeTextFile=false`，让文件操作留在受 DSH sandbox 约束的 Kimi 子进程内，禁止 Host reverse-RPC 绕过 sandbox。
+8. Kimi 前台模型 bridge 只使用进程级 `KIMI_MODEL_*` 和临时 `KIMI_CODE_HOME`，不得改写用户 Kimi 配置或遗留会话数据。
+9. bridge token、CLI stderr、环境变量和本机凭据不得进入用户诊断或仓库。
+10. 所有进程、临时目录、route、signal 监听器和队列必须可取消且幂等释放。
 
 ## Tests
 
@@ -28,9 +30,10 @@ node --check lib/index.js
 node --check lib/runtime.js
 node --check lib/harness.js
 node --check lib/codex-app-server.js
+node --check lib/kimi-acp.js
 ```
 
-测试覆盖选择隔离、同源写保护、CLI 托管、模型桥、Claude partial messages、Codex app-server、实时 reasoning/activity、取消、最终文本校准和 Host teardown。
+测试覆盖选择隔离、同源写保护、CLI 托管、模型桥、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、只读 reasoning/activity、最终文本校准和 Host teardown。
 
 ## Local iteration
 
@@ -48,4 +51,4 @@ ${DSH_HOME:-~/.dsh}/.agent-presets/harness-ally
 
 ## Versioning
 
-每次可见行为或协议变更都递增 `package.json` 版本，并同步 `lib/codex-app-server.js` 中的 app-server `clientInfo.version`。发布前运行完整测试、`npm pack --dry-run --json` 和隐私扫描。
+每次可见行为或协议变更都递增 `package.json` 版本，并同步 Codex app-server 与 Kimi ACP 的 `clientInfo.version`。发布前运行完整测试、`npm pack --dry-run --json` 和隐私扫描。

@@ -220,6 +220,14 @@
         backgroundMode: one-shot
         maxDepth: provider-managed
 
+    - id: tool-subagent-kimi-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: ally-kimi-code
+        toolName: subagent_kimi_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
     - id: workflow-worker-thread
       name: '@deepseek-ai/dsh-workflow-worker-thread'
       config:

@@ -28,6 +28,7 @@ function fixture({ globals = {}, installOk = true } = {}) {
           const packageName = spec.argv.at(-1)
           if (packageName.startsWith('@anthropic-ai/claude-code@')) managed.add(managedPath('claude-code', 'claude'))
           if (packageName.startsWith('@openai/codex@')) managed.add(managedPath('codex', 'codex'))
+          if (packageName.startsWith('@moonshot-ai/kimi-code@')) managed.add(managedPath('kimi-code', 'kimi'))
         }
         settle({ exitCode: installOk ? 0 : 1, signal: null })
       })
@@ -56,6 +57,7 @@ test('CLI status detects global first, then DSH-managed, then missing', async ()
   assert.deepEqual(status, {
     'claude-code': { available: true, source: 'global', installing: false },
     codex: { available: false, source: 'missing', installing: false },
+    'kimi-code': { available: false, source: 'missing', installing: false },
   })
   assert.equal(await f.manager.resolve('claude-code'), '/usr/local/bin/claude')
 })
@@ -82,6 +84,20 @@ test('install writes only to the DSH-managed prefix and becomes immediately reso
   ])
   assert.equal(f.spawns[0].cwd, join(f.managedRoot, 'codex'))
   assert.equal(await f.manager.resolve('codex'), f.managedPath('codex', 'codex'))
+})
+
+test('Kimi Code installs the official package into its managed prefix', async () => {
+  const f = fixture()
+
+  const installed = await f.manager.install('kimi-code')
+
+  assert.deepEqual(installed, { available: true, source: 'managed', installing: false })
+  assert.deepEqual(f.spawns[0].argv, [
+    '/usr/bin/npm', 'install', '--prefix', join(f.managedRoot, 'kimi-code'),
+    '--no-audit', '--no-fund', '--save-exact',
+    '--registry=https://registry.npmjs.org', '@moonshot-ai/kimi-code@latest',
+  ])
+  assert.equal(await f.manager.resolve('kimi-code'), f.managedPath('kimi-code', 'kimi'))
 })
 
 test('install is idempotent for global CLIs and coalesces concurrent managed installs', async () => {

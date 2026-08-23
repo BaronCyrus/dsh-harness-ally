@@ -42,7 +42,7 @@ function fixture({ preset = 'harness-ally', status = 'idle', harness = 'dsh', re
     },
   }
   const gateway = {
-    async availability() { return { 'claude-code': true, codex: true } },
+    async availability() { return { 'claude-code': true, codex: true, 'kimi-code': true } },
     async available() { if (availabilityGate) await availabilityGate; return true },
     start(selected, request) {
       starts.push({ selected, request })
@@ -95,7 +95,7 @@ test('snapshot exposes authoritative Harness selection and availability', async 
   assert.deepEqual(await runtime.snapshot(session.id), {
     eligible: true,
     harness: 'codex',
-    providers: { dsh: true, 'claude-code': true, codex: true },
+    providers: { dsh: true, 'claude-code': true, codex: true, 'kimi-code': true },
     dispatches: [],
     active: null,
   })
@@ -165,7 +165,7 @@ test('unmarked session-scoped LLM calls bypass the foreground Harness router', a
 })
 
 test('external prompt identifies the selected Harness separately from its DSH host', async () => {
-  for (const [harness, label] of [['claude-code', 'Claude Code'], ['codex', 'Codex']]) {
+  for (const [harness, label] of [['claude-code', 'Claude Code'], ['codex', 'Codex'], ['kimi-code', 'Kimi Code']]) {
     const { runtime, session, starts } = fixture({ harness })
     session.append('turn/start', { turn: 1 })
     session.append('step/start', { turn: 1, step: 1 })
@@ -308,7 +308,7 @@ test('external reasoning and tool activity stay visible without becoming DSH too
     yield { type: 'text-delta', text: '完成。' }
   })()
   const { runtime, session } = fixture({
-    harness: 'claude-code',
+    harness: 'kimi-code',
     stream,
     result: { output: [{ type: 'text', text: '完成。' }], stopReason: 'completed' },
   })
@@ -326,7 +326,7 @@ test('external reasoning and tool activity stay visible without becoming DSH too
   assert.equal(chunks.some((chunk) => chunk.type === 'tool-call-delta'), false)
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'block-start').map((chunk) => chunk.blockType), ['reasoning', 'text'])
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'reasoning-delta').map((chunk) => chunk.text), [
-    'Claude Code · 正在执行',
+    'Kimi Code · 正在执行',
     '\n\nInspect the workspace.',
     '\n\nBash · 统计项目文件夹数量',
   ])

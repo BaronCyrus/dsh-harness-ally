@@ -289,6 +289,6 @@ test('gateway execution and availability both use the shared CLI manager', async
 test('availability reflects executable resolution', async () => {
   const f = fixture({ missing: ['claude'] })
 
-  assert.deepEqual(await f.gateway.availability(), { 'claude-code': false, codex: true })
-  assert.deepEqual(f.resolves.sort(), ['claude', 'codex'])
+  assert.deepEqual(await f.gateway.availability(), { 'claude-code': false, codex: true, 'kimi-code': true })
+  assert.deepEqual(f.resolves.sort(), ['claude', 'codex', 'kimi'])
 })

@@ -109,20 +109,23 @@ test('Harness menu uses brand icons and title-only options', () => {
     'DeepSeek Harness',
     'Claude Code',
     'Codex',
+    'Kimi Code',
   ])
-  assert.deepEqual(options.map((option) => option.props.children[0].type), ['svg', 'svg', 'svg'])
+  assert.deepEqual(options.map((option) => option.props.children[0].type), ['svg', 'svg', 'svg', 'svg'])
   assert.deepEqual(options.map((option) => option.props.children[0].props['aria-label']), [
     'DeepSeek Harness',
     'Claude Code',
     'Codex',
+    'Kimi Code',
   ])
   assert.equal(options[0].type, 'button')
-  assert.deepEqual(options.slice(1).map((option) => option.type), ['div', 'div'])
+  assert.deepEqual(options.slice(1).map((option) => option.type), ['div', 'div', 'div'])
   assert.deepEqual(options.slice(1).map((option) => option.props.children[2].props.className), [
     'ally-engine-option-install',
     'ally-engine-option-install',
+    'ally-engine-option-install',
   ])
-  assert.deepEqual(options.slice(1).map((option) => option.props.children[2].props.children[0]), ['cli.install', 'cli.install'])
+  assert.deepEqual(options.slice(1).map((option) => option.props.children[2].props.children[0]), ['cli.install', 'cli.install', 'cli.install'])
   assert.equal(clientSource.includes('ally-engine-desc'), false)
   assert.equal(clientSource.includes('ally-engine-hint'), false)
   assert.equal(clientSource.includes('selector.hint'), false)
