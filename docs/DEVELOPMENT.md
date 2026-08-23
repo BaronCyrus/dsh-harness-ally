@@ -51,4 +51,4 @@ ${DSH_HOME:-~/.dsh}/.agent-presets/harness-ally
 
 ## Versioning
 
-每次可见行为或协议变更都递增 `package.json` 版本，并同步 Codex app-server 与 Kimi ACP 的 `clientInfo.version`。发布前运行完整测试、`npm pack --dry-run --json` 和隐私扫描。
+每次可见行为或协议变更都递增 `package.json` 版本；Codex app-server 与 Kimi ACP 通过 `lib/version.js` 读取同一个版本。发布前运行完整测试、`npm pack --dry-run --json` 和隐私扫描。

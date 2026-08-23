@@ -10,7 +10,7 @@ async function collect(iterable) {
   return values
 }
 
-function fixture() {
+function fixture({ modeAdvertised = true } = {}) {
   const messages = []
   const spawns = []
   let terminal
@@ -42,7 +42,12 @@ function fixture() {
           if (message.method === 'initialize') {
             send({ id: message.id, result: { protocolVersion: 1, agentInfo: { name: 'Kimi Code CLI', version: 'test' } } })
           } else if (message.method === 'session/new') {
-            send({ id: message.id, result: { sessionId: 'session-kimi', configOptions: [] } })
+            send({ id: message.id, result: {
+              sessionId: 'session-kimi',
+              configOptions: modeAdvertised ? [{
+                type: 'select', id: 'mode', currentValue: 'default', options: [{ value: 'auto', name: 'Auto' }],
+              }] : [],
+            } })
           } else if (message.method === 'session/set_config_option') {
             send({ id: message.id, result: {} })
           } else if (message.method === 'session/prompt') {
@@ -53,10 +58,15 @@ function fixture() {
                 { optionId: 'approve_always', name: 'Approve for this session', kind: 'allow_always' },
                 { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
               ], toolCall: { toolCallId: '1:tool-1', title: 'Bash' } } })
+              send({ id: 100, method: 'session/request_permission', params: { sessionId: 'session-kimi', options: [
+                { optionId: 'answer_a', name: 'Answer A', kind: 'allow_once' },
+                { optionId: 'dismiss', name: 'Dismiss', kind: 'reject_once' },
+              ], toolCall: { toolCallId: '1:question-1', title: 'Ask user' } } })
               send({ method: 'session/update', params: { sessionId: 'session-kimi', update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Inspect files.' } } } })
               send({ method: 'session/update', params: { sessionId: 'session-kimi', update: { sessionUpdate: 'tool_call', toolCallId: '1:tool-1', title: '统计项目文件夹数量', kind: 'execute', status: 'in_progress', rawInput: { command: 'find . -type d' } } } })
               send({ method: 'session/update', params: { sessionId: 'session-kimi', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hel' } } } })
               send({ method: 'session/update', params: { sessionId: 'session-kimi', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'lo' } } } })
+              send({ method: 'session/update', params: { sessionId: 'session-kimi', update: { sessionUpdate: 'tool_call_update', toolCallId: '1:tool-1', status: 'completed' } } })
               terminal()
             })
           } else if (message.method === 'session/cancel') {
@@ -139,6 +149,7 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
     { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'running' },
     { type: 'text-delta', text: 'Hel' },
     { type: 'text-delta', text: 'lo' },
+    { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'completed' },
   ])
   assert.deepEqual(result, { output: [{ type: 'text', text: 'Hello' }], stopReason: 'completed' })
   assert.deepEqual(f.spawns[0].spec.argv, ['/bin/kimi', 'acp'])
@@ -153,15 +164,34 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
     'initialize', 'session/new', 'session/set_config_option', 'session/prompt',
   ])
+  assert.equal(f.messages[0].params.clientInfo.version, '0.8.0')
   assert.deepEqual(f.messages[0].params.clientCapabilities.fs, { readTextFile: false, writeTextFile: false })
   assert.deepEqual(f.messages[2].params, { sessionId: 'session-kimi', configId: 'mode', value: 'auto' })
   assert.equal(f.messages[3].params.prompt[0].text, 'do work')
   assert.deepEqual(f.messages.find((message) => message.id === 99 && !message.method)?.result, {
     outcome: { outcome: 'selected', optionId: 'approve_once' },
   })
+  assert.deepEqual(f.messages.find((message) => message.id === 100 && !message.method)?.result, {
+    outcome: { outcome: 'cancelled' },
+  })
   assert.equal(f.spawns[0].handle.terminated, 1)
   assert.equal(f.bridgeCloses, 1)
   assert.equal(f.homeRemovals, 1)
+})
+
+test('Kimi ACP continues without forcing auto mode when the server does not advertise it', async () => {
+  const f = fixture({ modeAdvertised: false })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+
+  f.spawns[0].handle.complete()
+  const result = await run.result
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'completed')
+  assert.deepEqual(f.messages.filter((message) => message.method?.startsWith('session/')).map((message) => message.method), [
+    'session/new', 'session/prompt',
+  ])
 })
 
 test('Kimi cancellation sends session/cancel before terminating ACP', async () => {

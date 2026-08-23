@@ -305,6 +305,7 @@ test('external reasoning and tool activity stay visible without becoming DSH too
   const stream = (async function* () {
     yield { type: 'reasoning-delta', text: 'Inspect the workspace.' }
     yield { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'running' }
+    yield { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'completed' }
     yield { type: 'text-delta', text: '完成。' }
   })()
   const { runtime, session } = fixture({
@@ -329,9 +330,10 @@ test('external reasoning and tool activity stay visible without becoming DSH too
     'Kimi Code · 正在执行',
     '\n\nInspect the workspace.',
     '\n\nBash · 统计项目文件夹数量',
+    '\n\nBash · 统计项目文件夹数量 · 已完成',
   ])
   assert.equal(chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'reasoning').block.text,
-    'Inspect the workspace.\n\nBash · 统计项目文件夹数量')
+    'Inspect the workspace.\n\nBash · 统计项目文件夹数量\n\nBash · 统计项目文件夹数量 · 已完成')
 })
 
 test('external stream keeps the calibrated final block when deltas diverge', async () => {
