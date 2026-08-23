@@ -22,6 +22,11 @@ function fixture({
   nonSkillToolBeforeSkill = false,
   stalePermissionOnRecovery = false,
   delayRecoverySession = false,
+  prematureToolEnd = false,
+  prematureMarkerBeforeText = false,
+  prematureMarkerBeforeTool = false,
+  finalizationOmitsMarker = false,
+  finalizationWhitespaceOnly = false,
   skillLateMessageOnCancel = false,
   skillLateCompleteOnCancel = false,
   skillTitle = 'Skill',
@@ -122,11 +127,28 @@ function fixture({
                 })
                 setTimeout(() => {
                   if (terminated > 0) return
-                  send({ method: 'session/update', params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Slow recovered answer.' } } } })
+                  send({ method: 'session/update', params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Slow recovered answer.␞' } } } })
                   send({ id: message.id, result: { stopReason: 'end_turn' } })
                 }, 25)
               } else if (!skillRecoveryStall) queueMicrotask(() => {
-                if (!skillRecoveryEmpty) send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Recovered answer.' } } } })
+                if (!skillRecoveryEmpty) send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Recovered answer.␞' } } } })
+                send({ id: message.id, result: { stopReason: 'end_turn' } })
+              })
+            } else if (prematureToolEnd) {
+              queueMicrotask(() => {
+                if (promptCount === 1) {
+                  send({ method: 'session/update', params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'tool_call', toolCallId: '1:premature-tool', title: 'Read', kind: 'read', status: 'completed' } } })
+                  const draftText = prematureMarkerBeforeText
+                    ? 'Draft␞Still inspecting.'
+                    : prematureMarkerBeforeTool ? 'Draft␞' : 'Still inspecting.'
+                  send({ method: 'session/update', params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: draftText } } } })
+                  if (prematureMarkerBeforeTool) {
+                    send({ method: 'session/update', params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'tool_call', toolCallId: '1:after-marker-tool', title: 'Grep', kind: 'search', status: 'completed' } } })
+                  }
+                  terminal()
+                } else {
+                  send({ method: 'session/update', params: { sessionId: message.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: finalizationWhitespaceOnly ? '\n␞' : finalizationOmitsMarker ? 'Final requested answer.' : 'Final requested answer.␞' } } } })
+                }
                 send({ id: message.id, result: { stopReason: 'end_turn' } })
               })
             } else {
@@ -145,12 +167,13 @@ function fixture({
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hel' } } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'lo' } } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: '1:tool-1', status: 'completed' } } })
+                send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '␞' } } } })
                 terminal()
               })
             }
           } else if (message.method === 'session/cancel') {
             if (skillLateCompleteOnCancel) {
-              send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Final answer.' } } } })
+              send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Final answer.␞' } } } })
               if (promptRequest) send({ id: promptRequest.id, result: { stopReason: 'end_turn' } })
             } else {
               if (skillLateMessageOnCancel) {
@@ -281,11 +304,12 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
     'initialize', 'session/new', 'session/set_config_option', 'session/prompt',
   ])
-  assert.equal(f.messages[0].params.clientInfo.version, '0.9.2')
+  assert.equal(f.messages[0].params.clientInfo.version, '0.9.3')
   assert.deepEqual(f.messages[0].params.clientCapabilities.fs, { readTextFile: false, writeTextFile: false })
   assert.deepEqual(f.messages[2].params, { sessionId: 'session-kimi', configId: 'mode', value: 'auto' })
   assert.match(f.messages[3].params.prompt[0].text, /^do work\n\nKIMI CODE REPOSITORY SKILL POLICY/)
   assert.match(f.messages[3].params.prompt[0].text, /Do not invoke the native Skill tool/)
+  assert.match(f.messages[3].params.prompt[0].text, /End every complete final answer with the exact marker ␞/)
   assert.deepEqual(f.messages.find((message) => message.id === 99 && !message.method)?.result, {
     outcome: { outcome: 'selected', optionId: 'approve_once' },
   })
@@ -295,6 +319,65 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.equal(f.spawns[0].handle.terminated, 1)
   assert.equal(f.bridgeCloses, 1)
   assert.equal(f.homeRemovals, 1)
+})
+
+test('Kimi finalizes a tool turn when end_turn omits the completion marker', async () => {
+  const f = fixture({ prematureToolEnd: true })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  const eventPromise = collect(run.stream)
+  await f.terminalGate
+
+  const [events, result] = await Promise.all([eventPromise, run.result])
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(result.output[0].text, 'Still inspecting.Final requested answer.')
+  assert.equal(events.some((event) => event.type === 'text-delta' && event.text.includes('␞')), false)
+  assert.equal(f.messages.filter((message) => message.method === 'session/prompt').length, 2)
+  assert.match(f.messages.filter((message) => message.method === 'session/prompt')[1].params.prompt[0].text, /complete final answer/)
+})
+
+for (const [name, option] of [
+  ['visible text follows the marker', 'prematureMarkerBeforeText'],
+  ['a tool follows the marker', 'prematureMarkerBeforeTool'],
+]) {
+  test(`Kimi finalizes when ${name}`, async () => {
+    const f = fixture({ prematureToolEnd: true, [option]: true })
+    const run = await startKimiAcpRun(f.deps, f.request)
+    await f.terminalGate
+
+    const result = await run.result
+    await run.dispose()
+
+    assert.equal(result.stopReason, 'completed')
+    assert.match(result.output[0].text, /Final requested answer\./)
+    assert.equal(f.messages.filter((message) => message.method === 'session/prompt').length, 2)
+  })
+}
+
+test('Kimi reports an error when the bounded finalization still omits its marker', async () => {
+  const f = fixture({ prematureToolEnd: true, finalizationOmitsMarker: true })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+
+  const result = await run.result
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'error')
+  assert.equal(result.diagnostic, 'Kimi Code 最终回答缺失')
+  assert.equal(f.messages.filter((message) => message.method === 'session/prompt').length, 2)
+})
+
+test('Kimi rejects a marked finalization that adds only whitespace', async () => {
+  const f = fixture({ prematureToolEnd: true, finalizationWhitespaceOnly: true })
+  const run = await startKimiAcpRun(f.deps, f.request)
+  await f.terminalGate
+
+  const result = await run.result
+  await run.dispose()
+
+  assert.equal(result.stopReason, 'error')
+  assert.equal(result.diagnostic, 'Kimi Code 最终回答缺失')
 })
 
 test('Kimi cancels one stalled post-Skill request and recovers in a fresh ACP session', async () => {

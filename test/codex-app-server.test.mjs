@@ -123,7 +123,7 @@ test('Codex app-server streams dedicated agent message deltas without snapshot d
   assert.equal(f.spawns[0].spec.argv[1], 'app-server')
   assert.equal(f.spawns[0].spec.argv.includes('exec'), false)
   assert.deepEqual(f.requests.map((request) => request.method), ['initialize', 'thread/start', 'turn/start'])
-  assert.equal(f.requests[0].params.clientInfo.version, '0.9.2')
+  assert.equal(f.requests[0].params.clientInfo.version, '0.9.3')
   assert.equal(f.requests[0].params.capabilities.experimentalApi, true)
   assert.deepEqual(f.bridgeOpens[0].slice(0, 2), ['provider', 'model'])
   assert.equal(f.requests[1].params.modelProvider, 'dsh-ally')

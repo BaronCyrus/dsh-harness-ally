@@ -89,6 +89,7 @@ node ~/.dsh/.agent-presets/harness-ally/setup/install.mjs
 - 通过 DSH bridge 运行 Codex 时，app-server 使用固定的原生 capability model 身份生成工具目录，实际推理由用户选择的 DSH provider/model 负责；自定义模型名不会再让 Codex 静默丢失 `exec_command` 等原生工具。
 - Kimi ACP `tool_call*` 与其他外部工具活动都映射为 reasoning 中的只读状态行，不产生 `tool-call-delta`。
 - Kimi 默认不调用已知会卡住的原生 `Skill` 工具：adapter 在任务尾部追加稳定执行策略，让 Kimi 直接用 Read/Bash 打开 `.agents/skills/<name>/SKILL.md` 并遵循其内容。若模型仍意外调用原生 Skill，则保留兼容 watchdog：连续 30 秒无后续 ACP 活动时取消旧 prompt、创建新 ACP session 并直接读 Skill 文件恢复一次；新 session 完成首个非 Skill 原生工具后只关闭 watchdog，仍要求最终回答，避免长任务被误杀或工具完成被误报为答案。
+- Kimi 工具型任务使用一个从用户输出中剥离的完成标记确认最终回答；若 ACP 在工具完成后以普通 `end_turn` 只返回检查预告，adapter 会在同 session 内追加一次有界 finalization prompt，而不是把预告误报为完成。
 - Agent signal 会终止整个外部进程树；Codex 先尝试 `turn/interrupt`，Kimi Code 先发送 `session/cancel`。
 - 非 `danger-full-access` 模式由 DSH 外层 `sandbox.confine()` 包裹。
 - prompt 通过 stdin、app-server RPC 或 ACP JSON-RPC 传输，不出现在 argv。
