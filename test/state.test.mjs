@@ -33,32 +33,49 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
   }
 })
 
-test('versioned work ledgers are bounded and survive a state reload', async () => {
+test('versioned work ledgers are bounded while loading and survive the next state write', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-ledger-state-'))
   const file = join(directory, 'state.json')
+  const commands = Array.from({ length: 12 }, (_, index) => ({
+    command: index === 11 ? `command-${index}-${'x'.repeat(300)}` : `command-${index}`,
+    outcome: index % 2 ? 'completed' : 'failed',
+  }))
   try {
-    const state = await createAllianceState({ file })
-    await state.recordDispatch('session-1', {
-      turn: 7,
-      harness: 'codex',
-      model: 'model-a',
-      started: true,
-      ledger: {
-        version: 1,
-        filesChanged: Array.from({ length: 22 }, (_, index) => `/workspace/file-${index}.js`),
-        commands: Array.from({ length: 12 }, (_, index) => ({ command: `command-${index}`, outcome: index % 2 ? 'completed' : 'failed' })),
-        failedAttempts: Array.from({ length: 12 }, (_, index) => `failure-${index}`),
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      sessions: {
+        'session-1': {
+          harness: 'codex',
+          dispatches: [{
+            turn: 7,
+            harness: 'codex',
+            model: 'model-a',
+            started: true,
+            ledger: {
+              version: 1,
+              filesChanged: Array.from({ length: 22 }, (_, index) => `/workspace/file-${index}.js`),
+              commands,
+              failedAttempts: Array.from({ length: 12 }, (_, index) => `failure-${index}`),
+            },
+          }],
+        },
       },
-    })
+      resumes: {},
+    }))
+    const expected = {
+      version: 1,
+      filesChanged: Array.from({ length: 20 }, (_, index) => `/workspace/file-${index + 2}.js`),
+      commands: commands.slice(-10).map((item) => ({ ...item, command: item.command.slice(0, 240) })),
+      failedAttempts: Array.from({ length: 10 }, (_, index) => `failure-${index + 2}`),
+    }
+
+    const state = await createAllianceState({ file })
+    assert.deepEqual(state.dispatches('session-1')[0].ledger, expected)
+    await state.setHarness('session-1', 'codex')
     await state.close()
 
     const restored = await createAllianceState({ file })
-    assert.deepEqual(restored.dispatches('session-1')[0].ledger, {
-      version: 1,
-      filesChanged: Array.from({ length: 20 }, (_, index) => `/workspace/file-${index + 2}.js`),
-      commands: Array.from({ length: 10 }, (_, index) => ({ command: `command-${index + 2}`, outcome: (index + 2) % 2 ? 'completed' : 'failed' })),
-      failedAttempts: Array.from({ length: 10 }, (_, index) => `failure-${index + 2}`),
-    })
+    assert.deepEqual(restored.dispatches('session-1')[0].ledger, expected)
     await restored.close()
   } finally {
     await rm(directory, { recursive: true, force: true })

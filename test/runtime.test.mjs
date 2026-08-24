@@ -39,7 +39,7 @@ function fixture({ preset = 'harness-ally', status = 'idle', harness = 'dsh', re
       if (index < 0) recordedDispatches.push({ ...value })
       else recordedDispatches[index] = { ...value }
       persists.push(sessionId)
-      await onRecordDispatch?.(value)
+      await onRecordDispatch?.(value, { createdRuns })
     },
   }
   const gateway = {
@@ -681,11 +681,16 @@ test('completed external turns persist a versioned work ledger from structured a
       status: 'failed',
     }
     yield { type: 'activity', id: 'read-1', name: 'Read', summary: '/workspace/README.md', status: 'completed' }
+    yield { type: 'activity', id: 'search-1', name: 'WebSearch', summary: 'Authorization: private-query', status: 'failed' }
   })()
+  let disposedBeforeLedger = false
   const { runtime, session, recordedDispatches } = fixture({
     harness: 'codex',
     stream,
     result: { output: [{ type: 'text', text: 'Implemented; tests still fail.' }], stopReason: 'completed' },
+    onRecordDispatch(value, { createdRuns }) {
+      if (value.ledger) disposedBeforeLedger = createdRuns[0].disposed
+    },
   })
   session.append('turn/start', { turn: 5 })
   session.append('step/start', { turn: 5, step: 1 })
@@ -698,6 +703,7 @@ test('completed external turns persist a versioned work ledger from structured a
     messages: [],
   }, fallback().next))
 
+  assert.equal(disposedBeforeLedger, true)
   assert.deepEqual(recordedDispatches[0].ledger, {
     version: 1,
     filesChanged: ['/workspace/src/app.js', '/workspace/src/worker.js?token=<redacted>'],
@@ -705,7 +711,10 @@ test('completed external turns persist a versioned work ledger from structured a
       command: `API_TOKEN=<redacted> npm test --password=<redacted> -H 'X-API-Key: <redacted>' -d '{"api_key":"<redacted>"}'`,
       outcome: 'failed',
     }],
-    failedAttempts: [`Bash · API_TOKEN=<redacted> npm test --password=<redacted> -H 'X-API-Key: <redacted>' -d '{"api_key":"<redacted>"}'`],
+    failedAttempts: [
+      `Bash · API_TOKEN=<redacted> npm test --password=<redacted> -H 'X-API-Key: <redacted>' -d '{"api_key":"<redacted>"}'`,
+      'WebSearch',
+    ],
   })
 })
 

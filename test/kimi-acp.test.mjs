@@ -32,6 +32,7 @@ function fixture({
   resumeFails = false,
   loadReplay = false,
   ignoreGracefulExit = false,
+  includeFileActivity = false,
   skillLateMessageOnCancel = false,
   skillLateCompleteOnCancel = false,
   skillTitle = 'Skill',
@@ -209,9 +210,11 @@ function fixture({
                 ], toolCall: { toolCallId: '1:question-1', title: 'Ask user' } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Inspect files.' } } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'tool_call', toolCallId: '1:tool-1', title: '统计项目文件夹数量', kind: 'execute', status: 'in_progress', rawInput: { command: 'find . -type d' } } } })
+                if (includeFileActivity) send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'tool_call', toolCallId: '1:tool-2', title: 'Edit', kind: 'edit', status: 'in_progress', rawInput: { path: '/workspace/app.js' } } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hel' } } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'lo' } } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: '1:tool-1', status: 'completed' } } })
+                if (includeFileActivity) send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: '1:tool-2', status: 'completed' } } })
                 send({ method: 'session/update', params: { sessionId: promptRequest.params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '␞' } } } })
                 terminal()
               })
@@ -324,7 +327,7 @@ function fixture({
 }
 
 test('Kimi ACP streams message, thinking, and read-only tool activity through a DSH model route', async () => {
-  const f = fixture()
+  const f = fixture({ includeFileActivity: true })
   const run = await startKimiAcpRun(f.deps, f.request)
   const eventPromise = collect(run.stream)
   await f.terminalGate
@@ -337,9 +340,11 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.deepEqual(events, [
     { type: 'reasoning-delta', text: 'Inspect files.' },
     { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', command: 'find . -type d', status: 'running' },
+    { type: 'activity', id: '1:tool-2', name: 'Edit', summary: '/workspace/app.js', paths: ['/workspace/app.js'], status: 'running' },
     { type: 'text-delta', text: 'Hel' },
     { type: 'text-delta', text: 'lo' },
     { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', command: 'find . -type d', status: 'completed' },
+    { type: 'activity', id: '1:tool-2', name: 'Edit', summary: '/workspace/app.js', paths: ['/workspace/app.js'], status: 'completed' },
   ])
   assert.deepEqual(result, {
     output: [{ type: 'text', text: 'Hello' }],

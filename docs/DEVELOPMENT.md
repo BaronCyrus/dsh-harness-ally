@@ -60,7 +60,7 @@ node --check lib/codex-app-server.js
 node --check lib/kimi-acp.js
 ```
 
-测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、只读 reasoning/activity、work ledger 的有界脱敏持久化/fresh/full/parked handoff/失败与完成-取消竞态裁决、最终文本校准和 Host teardown。
+测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、三种 adapter 的 command/path/outcome activity、只读 reasoning/activity、work ledger 的有界脱敏持久化/fresh/full/parked handoff/失败与完成-取消竞态裁决、最终文本校准和 Host teardown。
 
 ## Local iteration
 
