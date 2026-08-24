@@ -682,6 +682,7 @@ test('completed external turns persist a versioned work ledger from structured a
     }
     yield { type: 'activity', id: 'read-1', name: 'Read', summary: '/workspace/README.md', status: 'completed' }
     yield { type: 'activity', id: 'search-1', name: 'WebSearch', summary: 'Authorization: private-query', status: 'failed' }
+    yield { type: 'activity', id: 'edit-2', name: 'Edit', summary: 'arbitrary tool payload', status: 'failed' }
   })()
   let disposedBeforeLedger = false
   const { runtime, session, recordedDispatches } = fixture({
@@ -714,6 +715,7 @@ test('completed external turns persist a versioned work ledger from structured a
     failedAttempts: [
       `Bash · API_TOKEN=<redacted> npm test --password=<redacted> -H 'X-API-Key: <redacted>' -d '{"api_key":"<redacted>"}'`,
       'WebSearch',
+      'Edit',
     ],
   })
 })
@@ -773,7 +775,7 @@ test('cancellation racing with a completed adapter result does not commit a work
 test('clean completion wins cancellation that arrives during ledger persistence', async () => {
   const controller = new AbortController()
   const stream = (async function* () {
-    yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: '/workspace/completed.js', status: 'completed' }
+    yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: '/workspace/completed.js', paths: ['/workspace/completed.js'], status: 'completed' }
   })()
   const { runtime, session, recordedDispatches } = fixture({
     harness: 'codex',
