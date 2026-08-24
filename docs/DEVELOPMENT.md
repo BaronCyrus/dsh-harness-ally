@@ -20,8 +20,9 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 7. Kimi ACP 客户端必须声明 `fs.readTextFile=false` / `fs.writeTextFile=false`，让文件操作留在受 DSH sandbox 约束的 Kimi 子进程内，禁止 Host reverse-RPC 绕过 sandbox。
 8. Kimi 前台模型 bridge 只使用进程级 `KIMI_MODEL_*` 和 DSH state 下的托管 `KIMI_CODE_HOME`；Codex/Claude 分别使用托管 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。不得改写用户 CLI 的普通配置或混入用户会话目录。
 9. bridge token、CLI stderr、环境变量和本机凭据不得进入用户诊断或仓库；provider-private bridge reasoning、Kimi replay update 与敏感诊断也不得因“完整输出”承诺而透传。
-10. 所有进程、临时目录、route、signal 监听器和队列必须可取消且幂等释放。
-11. work ledger 只接收归一化后的工具名、状态，以及明确选取的 command/path leaf；常见 token/key/password/auth 形态必须先脱敏，每项有字符上限，集合有数量上限，注入 prompt 时必须标为 untrusted records 而非指令。原始 stdout、reasoning 与完整 tool payload 不得落入状态文件。
+10. Codex 思考模式的工具子回合必须用 Responses `reasoning.encrypted_content` 回传完整 reasoning。bridge 只允许自己用持久 AES-256-GCM key 生成的不透明密文，并在 Host 内解封后与相邻 assistant text/function call 合为同一 provider-neutral message；summary 必须为空，wire/原生日志/key 文件不得出现 reasoning 明文，认证失败必须在调用 provider 前 fail closed。key 只在 DSH state 以 `0600` 持久化，用于同一版本跨 route/Host 重启恢复；它防止偶然明文泄露，不把本机 state 提升为密码学安全边界。
+11. 所有进程、临时目录、route、signal 监听器和队列必须可取消且幂等释放。
+12. work ledger 只接收归一化后的工具名、状态，以及明确选取的 command/path leaf；常见 token/key/password/auth 形态必须先脱敏，每项有字符上限，集合有数量上限，注入 prompt 时必须标为 untrusted records 而非指令。原始 stdout、reasoning 与完整 tool payload 不得落入状态文件。
 
 ## Cache invariants
 
@@ -54,13 +55,14 @@ npm test
 node --check lib/index.js
 node --check lib/runtime.js
 node --check lib/work-ledger.js
+node --check lib/reasoning-codec.js
 node --check lib/native-session.js
 node --check lib/harness.js
 node --check lib/codex-app-server.js
 node --check lib/kimi-acp.js
 ```
 
-测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、三种 adapter 的 command/path/outcome activity、只读 reasoning/activity、work ledger 的有界脱敏持久化/fresh/full/parked handoff/失败与完成-取消竞态裁决、最终文本校准和 Host teardown。
+测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Codex 私有 reasoning 的密文工具回传/跨 bridge 重启恢复/认证失败闭锁、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、三种 adapter 的 command/path/outcome activity、只读 reasoning/activity、work ledger 的有界脱敏持久化/fresh/full/parked handoff/失败与完成-取消竞态裁决、最终文本校准和 Host teardown。
 
 ## Local iteration
 
