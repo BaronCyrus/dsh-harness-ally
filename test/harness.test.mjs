@@ -378,6 +378,11 @@ test('Claude adapter exposes thinking and read-only tool activity events', async
     JSON.stringify({ type: 'stream_event', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Inspect files.' } } }),
     JSON.stringify({ type: 'assistant', parent_tool_use_id: null, message: { content: [
       { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { description: '统计项目文件夹数量', command: 'find . -type d' } },
+      { type: 'tool_use', id: 'tool-2', name: 'Bash', input: { description: '执行失败命令', command: 'false' } },
+    ] } }),
+    JSON.stringify({ type: 'user', parent_tool_use_id: null, message: { content: [
+      { type: 'tool_result', tool_use_id: 'tool-1', content: 'done', is_error: false },
+      { type: 'tool_result', tool_use_id: 'tool-2', content: 'failed', is_error: true },
     ] } }),
     JSON.stringify({ type: 'result', subtype: 'success', result: '完成。' }),
   ] })
@@ -388,6 +393,9 @@ test('Claude adapter exposes thinking and read-only tool activity events', async
   assert.deepEqual(events, [
     { type: 'reasoning-delta', text: 'Inspect files.' },
     { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'running' },
+    { type: 'activity', id: 'tool-2', name: 'Bash', summary: '执行失败命令', status: 'running' },
+    { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'completed' },
+    { type: 'activity', id: 'tool-2', name: 'Bash', summary: '执行失败命令', status: 'failed' },
   ])
   assert.equal(result.output[0].text, '完成。')
 })

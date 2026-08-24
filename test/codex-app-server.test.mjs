@@ -56,6 +56,9 @@ function fixture({ nativeSession, resumeFails = false } = {}) {
             queueMicrotask(() => {
               send({ method: 'item/reasoning/summaryTextDelta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'reasoning-1', delta: 'Inspect files.', summaryIndex: 0 } })
               send({ method: 'item/started', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'command-1', type: 'commandExecution', command: 'find . -type d', cwd: '/workspace', status: 'inProgress' } } })
+              send({ method: 'item/completed', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'command-1', type: 'commandExecution', command: 'find . -type d', cwd: '/workspace', status: 'failed' } } })
+              send({ method: 'item/started', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'file-1', type: 'fileChange', changes: [{ path: '/workspace/a.js' }, { path: '/workspace/b.js' }], status: 'inProgress' } } })
+              send({ method: 'item/completed', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'file-1', type: 'fileChange', changes: [{ path: '/workspace/a.js' }, { path: '/workspace/b.js' }], status: 'completed' } } })
               send({ method: 'item/agentMessage/delta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'message-1', delta: 'Hel' } })
               send({ method: 'item/updated', params: { threadId: activeThreadId, turnId: 'turn-1', item: { id: 'message-1', type: 'agentMessage', text: 'Hello' } } })
               send({ method: 'item/agentMessage/delta', params: { threadId: activeThreadId, turnId: 'turn-1', itemId: 'message-1', delta: 'lo' } })
@@ -125,6 +128,9 @@ test('Codex app-server streams dedicated agent message deltas without snapshot d
   assert.deepEqual(deltas, [
     { type: 'reasoning-delta', text: 'Inspect files.' },
     { type: 'activity', id: 'command-1', name: 'Bash', summary: 'find . -type d', status: 'running' },
+    { type: 'activity', id: 'command-1', name: 'Bash', summary: 'find . -type d', status: 'failed' },
+    { type: 'activity', id: 'file-1', name: 'Edit', summary: '/workspace/a.js, /workspace/b.js', paths: ['/workspace/a.js', '/workspace/b.js'], status: 'running' },
+    { type: 'activity', id: 'file-1', name: 'Edit', summary: '/workspace/a.js, /workspace/b.js', paths: ['/workspace/a.js', '/workspace/b.js'], status: 'completed' },
     { type: 'text-delta', text: 'Hel' },
     { type: 'text-delta', text: 'lo' },
   ])

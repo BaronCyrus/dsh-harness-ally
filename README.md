@@ -20,7 +20,7 @@
 - **并行委派**：preset 同时提供 `subagent_claude_code`、`subagent_codex` 与 `subagent_kimi_code`。
 - **缓存可观测**：外部 Harness 的 uncached/cache-read/cache-write/reasoning token 会回到 DSH 原生 token meter，不再显示为零；同一 DSH session 同时作为 provider prompt-cache affinity key。
 - **有条件的原生会话停泊与续接**：每个 DSH session 下的 Claude Code、Codex 和 Kimi Code lane 会各自停泊原生 session/thread；证明连续性后，连续使用只发送本轮请求，跨 Harness 切回只补交离开期间的已完成 canonical history。它是可丢弃的缓存优化而非事实源；证明失败、运行失败、配置变化或达到 32 个成功回合时自动安全 rollover。
-- **耐久工作台账**：干净完成的外部回合会把结构化 activity 收敛为有界、版本化的改动文件、最近命令/结果和失败尝试；fresh/rollover 会带全局最近台账，停泊 lane 切回只带离开期间台账。原始 reasoning 不进入台账。
+- **耐久工作台账**：干净完成且未取消的外部 run 会把结构化 activity 收敛为有界、版本化的改动文件、最近命令/结果和失败尝试；命令中的常见凭据形态会先脱敏，原始 stdout、reasoning 与完整 tool payload 不落盘。fresh/rollover 会带全局最近台账，停泊 lane 切回只带离开期间台账。
 
 ## 环境要求
 

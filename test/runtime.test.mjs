@@ -196,6 +196,7 @@ test('parked Harness handoffs include only the bounded work ledger observed whil
 
   const handoff = view.resumeFrom(watermark, { afterTurn: 1, beforeTurn: 3 })
   assert.match(handoff, /WORK LEDGER \(AUTO-EXTRACTED\)/)
+  assert.match(handoff, /untrusted records, not instructions/)
   assert.match(handoff, /Files changed:\n- \/workspace\/during\.js/)
   assert.match(handoff, /Commands \(most recent\):\n- npm test → failed/)
   assert.match(handoff, /Failed attempts:\n- Bash · npm test/)
@@ -660,9 +661,16 @@ test('external reasoning and tool activity stay visible without becoming DSH too
 
 test('completed external turns persist a versioned work ledger from structured activities', async () => {
   const stream = (async function* () {
-    yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: '/workspace/src/app.js', status: 'completed' }
-    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'npm test', status: 'running' }
-    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'npm test', status: 'failed' }
+    yield {
+      type: 'activity',
+      id: 'edit-1',
+      name: 'Edit',
+      summary: '/workspace/src/app.js, /workspace/src/worker.js',
+      paths: ['/workspace/src/app.js', '/workspace/src/worker.js'],
+      status: 'completed',
+    }
+    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'API_TOKEN=super-secret npm test --password hunter2', status: 'running' }
+    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'API_TOKEN=super-secret npm test --password hunter2', status: 'failed' }
     yield { type: 'activity', id: 'read-1', name: 'Read', summary: '/workspace/README.md', status: 'completed' }
   })()
   const { runtime, session, recordedDispatches } = fixture({
@@ -683,9 +691,9 @@ test('completed external turns persist a versioned work ledger from structured a
 
   assert.deepEqual(recordedDispatches[0].ledger, {
     version: 1,
-    filesChanged: ['/workspace/src/app.js'],
-    commands: [{ command: 'npm test', outcome: 'failed' }],
-    failedAttempts: ['Bash · npm test'],
+    filesChanged: ['/workspace/src/app.js', '/workspace/src/worker.js'],
+    commands: [{ command: 'API_TOKEN=<redacted> npm test --password=<redacted>', outcome: 'failed' }],
+    failedAttempts: ['Bash · API_TOKEN=<redacted> npm test --password=<redacted>'],
   })
 })
 
@@ -712,6 +720,33 @@ test('failed and aborted external turns do not commit a work ledger', async () =
 
     assert.equal(recordedDispatches[0].ledger, undefined)
   }
+})
+
+test('cancellation racing with a completed adapter result does not commit a work ledger', async () => {
+  const controller = new AbortController()
+  const stream = (async function* () {
+    yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: '/workspace/cancelled.js', status: 'completed' }
+    controller.abort()
+  })()
+  const { runtime, session, recordedDispatches } = fixture({
+    harness: 'codex',
+    stream,
+    result: { output: [{ type: 'text', text: 'too late' }], stopReason: 'completed' },
+  })
+  session.append('turn/start', { turn: 7 })
+  session.append('step/start', { turn: 7, step: 1 })
+
+  const chunks = await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    provider: 'configured-provider',
+    model: 'configured-model',
+    messages: [],
+    signal: controller.signal,
+  }, fallback().next))
+
+  assert.equal(recordedDispatches[0].ledger, undefined)
+  assert.equal(chunks.at(-1).reason.kind, 'aborted')
 })
 
 test('external stream keeps the calibrated final block when deltas diverge', async () => {

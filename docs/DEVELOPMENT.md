@@ -21,7 +21,7 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 8. Kimi 前台模型 bridge 只使用进程级 `KIMI_MODEL_*` 和 DSH state 下的托管 `KIMI_CODE_HOME`；Codex/Claude 分别使用托管 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。不得改写用户 CLI 的普通配置或混入用户会话目录。
 9. bridge token、CLI stderr、环境变量和本机凭据不得进入用户诊断或仓库；provider-private bridge reasoning、Kimi replay update 与敏感诊断也不得因“完整输出”承诺而透传。
 10. 所有进程、临时目录、route、signal 监听器和队列必须可取消且幂等释放。
-11. work ledger 只接收归一化后的工具名、单行摘要与状态；每项有字符上限，集合有数量上限，原始 stdout、reasoning 与 tool payload 不得落入状态文件。
+11. work ledger 只接收归一化后的工具名、状态，以及明确选取的 command/path leaf；常见 token/key/password/auth 形态必须先脱敏，每项有字符上限，集合有数量上限，注入 prompt 时必须标为 untrusted records 而非指令。原始 stdout、reasoning 与完整 tool payload 不得落入状态文件。
 
 ## Cache invariants
 
@@ -44,7 +44,7 @@ DSH 始终拥有 turn、step、history、checkpoint、权限和取消。Claude C
 8. fingerprint 变化、无法证明的 turn 缺口或一个 lane 达到 32 个成功回合会触发安全 rollover；状态 v3 最多保留 200 个 lane 与每 session 400 个 dispatch，v2 lane 仅保留连续恢复兼容并在下一次成功后懒迁移，淘汰只影响优化，不影响正确性。每个 dispatch 的 v1 work ledger 最多保留 20 个文件、10 条命令和 10 条失败尝试。
 9. 最新顶层用户请求含图片时必须在 dispatch 前硬拒绝；历史图片（包括 tool-result 嵌套图片）降级为占位符，tool result 名称必须通过 `toolCallId` 关联，reasoning 不进入 canonical 水位线，避免易变过程文本破坏可证明前缀。无文本的成功结果不能形成新水位线，后续跨 Harness 切回必须 fresh/full。
 10. Kimi `session/load` 的历史 replay update 不得进入当前 DSH stream；成功回合先关闭 ACP stdin并有界等待进程自然退出以刷盘，超时则丢弃该 vendor id 后终止；Skill watchdog 的 fresh recovery 必须携带当前 canonical surface，其新 session 是本回合释放后提交的最终 vendor id。
-11. work ledger 只在外部 run 返回 `completed` 且 run 已干净释放后提交；error/abort 不提交半成品台账。ledger 是连续性辅助，不是 transcript attestation，不能放宽任何 resume 水位线检查。
+11. work ledger 只在单次外部 `runtime.route()` run 返回 `completed`、signal 未取消且 run 已干净释放后提交；error/abort/cancellation race 不提交该 run 的半成品台账。同一 DSH turn 的后续 step 会与此前干净 step 合并，后续失败不回滚此前已经完成的可观察工作。ledger 是连续性辅助，不是 transcript attestation，不能放宽任何 resume 水位线检查。
 12. revision CAS、singleflight 与 quarantine 的威胁模型是单个 DSH Host 进程；当前状态文件不提供多进程锁、显式 fsync、跨进程 ABA 防护或断电一致性承诺。若未来允许多个 Host 共享 `DSH_HOME`，必须先升级持久化协议。
 
 ## Tests
@@ -60,7 +60,7 @@ node --check lib/codex-app-server.js
 node --check lib/kimi-acp.js
 ```
 
-测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、只读 reasoning/activity、work ledger 的有界持久化/fresh/full/parked handoff/失败不提交、最终文本校准和 Host teardown。
+测试覆盖选择隔离、同源写保护、CLI 托管、稳定 prompt 前缀、模型桥 cache usage/多请求累计/session affinity、Claude partial messages、Codex app-server、Kimi ACP 握手/模型注入/实时事件/取消/临时目录清理、只读 reasoning/activity、work ledger 的有界脱敏持久化/fresh/full/parked handoff/失败与取消竞态不提交、最终文本校准和 Host teardown。
 
 ## Local iteration
 
