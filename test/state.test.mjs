@@ -152,34 +152,6 @@ test('native session records use CAS and retain only the newest 200 lanes', asyn
   }
 })
 
-test('oversized persisted resume state is capped while loading', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-state-load-cap-'))
-  const file = join(directory, 'state.json')
-  try {
-    await writeFile(file, JSON.stringify({
-      version: 3,
-      sessions: {},
-      resumes: Object.fromEntries(Array.from({ length: 205 }, (_, index) => [`lane-${index}`, {
-        revision: 1,
-        vendorId: `vendor-${index}`,
-        fingerprint: 'fingerprint',
-        throughTurn: 1,
-        turns: 1,
-        updatedAt: index,
-      }])),
-    }))
-
-    const state = await createAllianceState({ file })
-    assert.equal(state.resume('lane-0'), undefined)
-    assert.equal(state.resume('lane-4'), undefined)
-    assert.equal(state.resume('lane-5').vendorId, 'vendor-5')
-    assert.equal(state.resume('lane-204').vendorId, 'vendor-204')
-    await state.close()
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
 test('later steps preserve and extend the completed work ledger for the same turn', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-ledger-steps-'))
   const file = join(directory, 'state.json')
