@@ -392,10 +392,10 @@ test('Claude adapter exposes thinking and read-only tool activity events', async
 
   assert.deepEqual(events, [
     { type: 'reasoning-delta', text: 'Inspect files.' },
-    { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'running' },
-    { type: 'activity', id: 'tool-2', name: 'Bash', summary: '执行失败命令', status: 'running' },
-    { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'completed' },
-    { type: 'activity', id: 'tool-2', name: 'Bash', summary: '执行失败命令', status: 'failed' },
+    { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', command: 'find . -type d', status: 'running' },
+    { type: 'activity', id: 'tool-2', name: 'Bash', summary: '执行失败命令', command: 'false', status: 'running' },
+    { type: 'activity', id: 'tool-1', name: 'Bash', summary: '统计项目文件夹数量', command: 'find . -type d', status: 'completed' },
+    { type: 'activity', id: 'tool-2', name: 'Bash', summary: '执行失败命令', command: 'false', status: 'failed' },
   ])
   assert.equal(result.output[0].text, '完成。')
 })

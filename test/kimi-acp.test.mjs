@@ -336,10 +336,10 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
 
   assert.deepEqual(events, [
     { type: 'reasoning-delta', text: 'Inspect files.' },
-    { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'running' },
+    { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', command: 'find . -type d', status: 'running' },
     { type: 'text-delta', text: 'Hel' },
     { type: 'text-delta', text: 'lo' },
-    { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', status: 'completed' },
+    { type: 'activity', id: '1:tool-1', name: 'Bash', summary: '统计项目文件夹数量', command: 'find . -type d', status: 'completed' },
   ])
   assert.deepEqual(result, {
     output: [{ type: 'text', text: 'Hello' }],

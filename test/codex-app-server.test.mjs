@@ -127,8 +127,8 @@ test('Codex app-server streams dedicated agent message deltas without snapshot d
 
   assert.deepEqual(deltas, [
     { type: 'reasoning-delta', text: 'Inspect files.' },
-    { type: 'activity', id: 'command-1', name: 'Bash', summary: 'find . -type d', status: 'running' },
-    { type: 'activity', id: 'command-1', name: 'Bash', summary: 'find . -type d', status: 'failed' },
+    { type: 'activity', id: 'command-1', name: 'Bash', summary: 'find . -type d', command: 'find . -type d', status: 'running' },
+    { type: 'activity', id: 'command-1', name: 'Bash', summary: 'find . -type d', command: 'find . -type d', status: 'failed' },
     { type: 'activity', id: 'file-1', name: 'Edit', summary: '/workspace/a.js, /workspace/b.js', paths: ['/workspace/a.js', '/workspace/b.js'], status: 'running' },
     { type: 'activity', id: 'file-1', name: 'Edit', summary: '/workspace/a.js, /workspace/b.js', paths: ['/workspace/a.js', '/workspace/b.js'], status: 'completed' },
     { type: 'text-delta', text: 'Hel' },

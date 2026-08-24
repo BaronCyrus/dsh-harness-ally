@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { createAllianceRuntime, createConversationView } from '../lib/runtime.js'
 
-function fixture({ preset = 'harness-ally', status = 'idle', harness = 'dsh', result, stream, availabilityGate, dispatchGate, startError } = {}) {
+function fixture({ preset = 'harness-ally', status = 'idle', harness = 'dsh', result, stream, availabilityGate, dispatchGate, startError, onRecordDispatch } = {}) {
   const session = {
     id: 'session-1',
     header: { cwd: '/workspace', agentPreset: preset },
@@ -39,6 +39,7 @@ function fixture({ preset = 'harness-ally', status = 'idle', harness = 'dsh', re
       if (index < 0) recordedDispatches.push({ ...value })
       else recordedDispatches[index] = { ...value }
       persists.push(sessionId)
+      await onRecordDispatch?.(value)
     },
   }
   const gateway = {
@@ -665,12 +666,20 @@ test('completed external turns persist a versioned work ledger from structured a
       type: 'activity',
       id: 'edit-1',
       name: 'Edit',
-      summary: '/workspace/src/app.js, /workspace/src/worker.js',
-      paths: ['/workspace/src/app.js', '/workspace/src/worker.js'],
+      summary: '/workspace/src/app.js, /workspace/src/worker.js?token=path-secret',
+      paths: ['/workspace/src/app.js', '/workspace/src/worker.js?token=path-secret'],
       status: 'completed',
     }
-    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'API_TOKEN=super-secret npm test --password hunter2', status: 'running' }
-    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'API_TOKEN=super-secret npm test --password hunter2', status: 'failed' }
+    yield {
+      type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'Run test suite',
+      command: `API_TOKEN=super-secret npm test --password hunter2 -H 'X-API-Key: header-secret' -d '{"api_key":"json-secret"}'`,
+      status: 'running',
+    }
+    yield {
+      type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'Run test suite',
+      command: `API_TOKEN=super-secret npm test --password hunter2 -H 'X-API-Key: header-secret' -d '{"api_key":"json-secret"}'`,
+      status: 'failed',
+    }
     yield { type: 'activity', id: 'read-1', name: 'Read', summary: '/workspace/README.md', status: 'completed' }
   })()
   const { runtime, session, recordedDispatches } = fixture({
@@ -691,9 +700,12 @@ test('completed external turns persist a versioned work ledger from structured a
 
   assert.deepEqual(recordedDispatches[0].ledger, {
     version: 1,
-    filesChanged: ['/workspace/src/app.js', '/workspace/src/worker.js'],
-    commands: [{ command: 'API_TOKEN=<redacted> npm test --password=<redacted>', outcome: 'failed' }],
-    failedAttempts: ['Bash · API_TOKEN=<redacted> npm test --password=<redacted>'],
+    filesChanged: ['/workspace/src/app.js', '/workspace/src/worker.js?token=<redacted>'],
+    commands: [{
+      command: `API_TOKEN=<redacted> npm test --password=<redacted> -H 'X-API-Key: <redacted>' -d '{"api_key":"<redacted>"}'`,
+      outcome: 'failed',
+    }],
+    failedAttempts: [`Bash · API_TOKEN=<redacted> npm test --password=<redacted> -H 'X-API-Key: <redacted>' -d '{"api_key":"<redacted>"}'`],
   })
 })
 
@@ -747,6 +759,35 @@ test('cancellation racing with a completed adapter result does not commit a work
 
   assert.equal(recordedDispatches[0].ledger, undefined)
   assert.equal(chunks.at(-1).reason.kind, 'aborted')
+})
+
+test('clean completion wins cancellation that arrives during ledger persistence', async () => {
+  const controller = new AbortController()
+  const stream = (async function* () {
+    yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: '/workspace/completed.js', status: 'completed' }
+  })()
+  const { runtime, session, recordedDispatches } = fixture({
+    harness: 'codex',
+    stream,
+    result: { output: [{ type: 'text', text: 'done' }], stopReason: 'completed' },
+    onRecordDispatch(value) {
+      if (value.ledger) controller.abort()
+    },
+  })
+  session.append('turn/start', { turn: 8 })
+  session.append('step/start', { turn: 8, step: 1 })
+
+  const chunks = await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    provider: 'configured-provider',
+    model: 'configured-model',
+    messages: [],
+    signal: controller.signal,
+  }, fallback().next))
+
+  assert.deepEqual(recordedDispatches[0].ledger.filesChanged, ['/workspace/completed.js'])
+  assert.equal(chunks.at(-1).reason.kind, 'stop')
 })
 
 test('external stream keeps the calibrated final block when deltas diverge', async () => {
