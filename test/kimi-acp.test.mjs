@@ -359,7 +359,7 @@ test('Kimi ACP streams message, thinking, and read-only tool activity through a 
   assert.deepEqual(f.messages.filter((message) => message.method).map((message) => message.method), [
     'initialize', 'session/new', 'session/set_config_option', 'session/prompt',
   ])
-  assert.equal(f.messages[0].params.clientInfo.version, '0.11.1')
+  assert.equal(f.messages[0].params.clientInfo.version, '0.12.0')
   assert.deepEqual(f.messages[0].params.clientCapabilities.fs, { readTextFile: false, writeTextFile: false })
   assert.deepEqual(f.messages[2].params, { sessionId: 'session-kimi', configId: 'mode', value: 'auto' })
   assert.match(f.messages[3].params.prompt[0].text, /^do work\n\nKIMI CODE REPOSITORY SKILL POLICY/)

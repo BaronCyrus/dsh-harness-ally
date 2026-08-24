@@ -164,6 +164,44 @@ test('conversation watermarks derive exact consecutive and parked handoff prompt
   assert.equal(partialAbortedGap.resumeFrom(watermark, { afterTurn: 1, beforeTurn: 3 }), undefined)
 })
 
+test('parked Harness handoffs include only the bounded work ledger observed while away', () => {
+  const human = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  const assistant = (text) => ({ role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text }] })
+  const first = createConversationView([human('first')])
+  const watermark = first.watermarkAfter('answer one')
+  const view = createConversationView([
+    human('first'),
+    assistant('answer one'),
+    human('work handled elsewhere'),
+    assistant('other result'),
+    human('continue here'),
+  ], {
+    completedTurns: new Set([2]),
+    workLedgers: [
+      {
+        turn: 1,
+        ledger: { version: 1, filesChanged: ['/workspace/before.js'], commands: [], failedAttempts: [] },
+      },
+      {
+        turn: 2,
+        ledger: {
+          version: 1,
+          filesChanged: ['/workspace/during.js'],
+          commands: [{ command: 'npm test', outcome: 'failed' }],
+          failedAttempts: ['Bash · npm test'],
+        },
+      },
+    ],
+  })
+
+  const handoff = view.resumeFrom(watermark, { afterTurn: 1, beforeTurn: 3 })
+  assert.match(handoff, /WORK LEDGER \(AUTO-EXTRACTED\)/)
+  assert.match(handoff, /Files changed:\n- \/workspace\/during\.js/)
+  assert.match(handoff, /Commands \(most recent\):\n- npm test → failed/)
+  assert.match(handoff, /Failed attempts:\n- Bash · npm test/)
+  assert.doesNotMatch(handoff, /before\.js/)
+})
+
 test('conversation provenance isolates identities across parked Harness handoffs', () => {
   const message = (id, role, text, kind) => ({ id, role, source: { kind }, content: [{ type: 'text', text }] })
   const provenance = new Map([
@@ -344,6 +382,42 @@ test('runtime labels canonical messages with the Harness active for each DSH tur
   assert.match(prompt, /\[DSH TURN 1 · EXECUTION HARNESS: Claude Code\]\nUSER\nremember ALPHA/)
   assert.match(prompt, /\[DSH TURN 1 · EXECUTION HARNESS: Claude Code\]\nASSISTANT\nC1 OK/)
   assert.match(prompt, /\[DSH TURN 2 · EXECUTION HARNESS: Codex\]\nUSER\nremember BETA$/)
+})
+
+test('fresh and rollover prompts carry the bounded work ledger before the current request', async () => {
+  const { runtime, session, starts, recordedDispatches } = fixture({ harness: 'claude-code' })
+  recordedDispatches.push({
+    turn: 1,
+    harness: 'codex',
+    model: 'configured-model',
+    started: true,
+    ledger: {
+      version: 1,
+      filesChanged: ['/workspace/src/previous.js'],
+      commands: [{ command: 'npm test', outcome: 'completed' }],
+      failedAttempts: [],
+    },
+  })
+  session.append('turn/start', { turn: 2 })
+  session.append('step/start', { turn: 2, step: 1 })
+
+  await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'first' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+    ],
+  }, fallback().next))
+
+  const prompt = starts[0].request.prompt[0].text
+  assert.match(prompt, /WORK LEDGER \(AUTO-EXTRACTED\)/)
+  assert.match(prompt, /- \/workspace\/src\/previous\.js/)
+  assert.match(prompt, /- npm test → completed/)
+  assert.equal(prompt.indexOf('WORK LEDGER'), prompt.lastIndexOf('WORK LEDGER'))
+  assert.equal(prompt.indexOf('WORK LEDGER') < prompt.lastIndexOf('USER\ncontinue'), true)
+  assert.deepEqual(starts[0].request.incrementalPrompt, [{ type: 'text', text: 'USER\ncontinue' }])
 })
 
 test('external prompts keep the Harness instruction, system, and prior history as a stable prefix', async () => {
@@ -582,6 +656,62 @@ test('external reasoning and tool activity stay visible without becoming DSH too
   ])
   assert.equal(chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'reasoning').block.text,
     'Inspect the workspace.\n\nBash · 统计项目文件夹数量\n\nBash · 统计项目文件夹数量 · 已完成')
+})
+
+test('completed external turns persist a versioned work ledger from structured activities', async () => {
+  const stream = (async function* () {
+    yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: '/workspace/src/app.js', status: 'completed' }
+    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'npm test', status: 'running' }
+    yield { type: 'activity', id: 'cmd-1', name: 'Bash', summary: 'npm test', status: 'failed' }
+    yield { type: 'activity', id: 'read-1', name: 'Read', summary: '/workspace/README.md', status: 'completed' }
+  })()
+  const { runtime, session, recordedDispatches } = fixture({
+    harness: 'codex',
+    stream,
+    result: { output: [{ type: 'text', text: 'Implemented; tests still fail.' }], stopReason: 'completed' },
+  })
+  session.append('turn/start', { turn: 5 })
+  session.append('step/start', { turn: 5, step: 1 })
+
+  await collect(runtime.route({
+    sessionId: session.id,
+    agentLoop: true,
+    provider: 'configured-provider',
+    model: 'configured-model',
+    messages: [],
+  }, fallback().next))
+
+  assert.deepEqual(recordedDispatches[0].ledger, {
+    version: 1,
+    filesChanged: ['/workspace/src/app.js'],
+    commands: [{ command: 'npm test', outcome: 'failed' }],
+    failedAttempts: ['Bash · npm test'],
+  })
+})
+
+test('failed and aborted external turns do not commit a work ledger', async () => {
+  for (const stopReason of ['error', 'aborted']) {
+    const stream = (async function* () {
+      yield { type: 'activity', id: 'edit-1', name: 'Edit', summary: `/workspace/${stopReason}.js`, status: 'completed' }
+    })()
+    const { runtime, session, recordedDispatches } = fixture({
+      harness: 'codex',
+      stream,
+      result: { output: [], stopReason, diagnostic: 'stopped' },
+    })
+    session.append('turn/start', { turn: 6 })
+    session.append('step/start', { turn: 6, step: 1 })
+
+    await collect(runtime.route({
+      sessionId: session.id,
+      agentLoop: true,
+      provider: 'configured-provider',
+      model: 'configured-model',
+      messages: [],
+    }, fallback().next))
+
+    assert.equal(recordedDispatches[0].ledger, undefined)
+  }
 })
 
 test('external stream keeps the calibrated final block when deltas diverge', async () => {

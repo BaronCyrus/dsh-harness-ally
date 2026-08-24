@@ -33,6 +33,38 @@ test('Harness selection and turn dispatch metadata persist outside Session logs'
   }
 })
 
+test('versioned work ledgers are bounded and survive a state reload', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-ledger-state-'))
+  const file = join(directory, 'state.json')
+  try {
+    const state = await createAllianceState({ file })
+    await state.recordDispatch('session-1', {
+      turn: 7,
+      harness: 'codex',
+      model: 'model-a',
+      started: true,
+      ledger: {
+        version: 1,
+        filesChanged: Array.from({ length: 22 }, (_, index) => `/workspace/file-${index}.js`),
+        commands: Array.from({ length: 12 }, (_, index) => ({ command: `command-${index}`, outcome: index % 2 ? 'completed' : 'failed' })),
+        failedAttempts: Array.from({ length: 12 }, (_, index) => `failure-${index}`),
+      },
+    })
+    await state.close()
+
+    const restored = await createAllianceState({ file })
+    assert.deepEqual(restored.dispatches('session-1')[0].ledger, {
+      version: 1,
+      filesChanged: Array.from({ length: 20 }, (_, index) => `/workspace/file-${index + 2}.js`),
+      commands: Array.from({ length: 10 }, (_, index) => ({ command: `command-${index + 2}`, outcome: (index + 2) % 2 ? 'completed' : 'failed' })),
+      failedAttempts: Array.from({ length: 10 }, (_, index) => `failure-${index + 2}`),
+    })
+    await restored.close()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('state v2 lazily migrates resume records to v3 canonical watermarks', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-state-v3-'))
   const file = join(directory, 'state.json')
@@ -98,6 +130,57 @@ test('native session records use CAS and retain only the newest 200 lanes', asyn
     const raw = JSON.parse(await readFile(file, 'utf8'))
     assert.equal(Object.keys(raw.resumes).length, 200)
     assert.equal(raw.resumes['lane-204'].vendorId, 'vendor-204')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('later steps preserve and extend the completed work ledger for the same turn', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-ally-ledger-steps-'))
+  const file = join(directory, 'state.json')
+  try {
+    const state = await createAllianceState({ file })
+    await state.recordDispatch('session-1', {
+      turn: 1,
+      step: 1,
+      harness: 'codex',
+      model: 'model-a',
+      started: true,
+      ledger: {
+        version: 1,
+        filesChanged: ['/workspace/first.js'],
+        commands: [{ command: 'npm test', outcome: 'completed' }],
+        failedAttempts: [],
+      },
+    })
+    await state.recordDispatch('session-1', {
+      turn: 1,
+      step: 2,
+      harness: 'codex',
+      model: 'model-a',
+      started: true,
+    })
+    await state.recordDispatch('session-1', {
+      turn: 1,
+      step: 2,
+      harness: 'codex',
+      model: 'model-a',
+      started: true,
+      ledger: {
+        version: 1,
+        filesChanged: ['/workspace/second.js'],
+        commands: [],
+        failedAttempts: ['Edit · retry failed'],
+      },
+    })
+
+    assert.deepEqual(state.dispatches('session-1')[0].ledger, {
+      version: 1,
+      filesChanged: ['/workspace/first.js', '/workspace/second.js'],
+      commands: [{ command: 'npm test', outcome: 'completed' }],
+      failedAttempts: ['Edit · retry failed'],
+    })
+    await state.close()
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-ally",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "Cache-aware Harness Alliance Mode for DeepSeek Harness with DSH-routed Claude Code, Codex, and Kimi Code execution.",
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "lib/kimi-acp.js",
     "lib/harness.js",
     "lib/runtime.js",
+    "lib/work-ledger.js",
     "lib/client.js",
     "cordis.patch.yml"
   ],
